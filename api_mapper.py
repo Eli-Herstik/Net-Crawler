@@ -271,7 +271,12 @@ class APIMapper:
                     if should_follow and current_url not in self.navigator.visited_urls:
                         # New page, explore it recursively
                         self.navigator.visited_urls.add(current_url)
+                        # Save parent page's click counter before exploring deeper page
+                        saved_clicks = self.navigator.clicks_on_current_page
+                        self.navigator.clicks_on_current_page = 0
                         await self._explore_page(page, depth + 1)
+                        # Restore parent page's click counter
+                        self.navigator.clicks_on_current_page = saved_clicks
                     elif not should_follow:
                         print(f"Skipping external/excluded URL: {current_url}")
                     
@@ -312,7 +317,10 @@ class APIMapper:
                             
                             # Navigate
                             if await self.navigator.navigate_to(page, href, depth + 1):
+                                saved_clicks = self.navigator.clicks_on_current_page
+                                self.navigator.clicks_on_current_page = 0
                                 await self._explore_page(page, depth + 1)
+                                self.navigator.clicks_on_current_page = saved_clicks
                                 # Try to go back if we navigated to a new page
                                 if depth > 0:
                                     try:
