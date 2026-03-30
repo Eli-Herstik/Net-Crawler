@@ -222,6 +222,24 @@ class NavigationHandler:
             print(f"Click error: {e}")
             return False
 
+    async def _get_element_label(self, input_el) -> str:
+        """Get a human-readable label for a form element."""
+        try:
+            text = (await input_el.evaluate('el => el.textContent') or "").strip()
+            if not text:
+                text = (await input_el.get_attribute('aria-label') or "").strip()
+            if not text:
+                text = (await input_el.get_attribute('placeholder') or "").strip()
+            if not text:
+                text = (await input_el.get_attribute('name') or "").strip()
+            if not text:
+                text = (await input_el.get_attribute('id') or "").strip()
+            if text:
+                return f" ('{text[:30]}')"
+        except:
+            pass
+        return ""
+
     async def _get_minimum_length(self, input_el) -> int:
         """Get minimum length requirement for input field."""
         try:
@@ -318,16 +336,17 @@ class NavigationHandler:
                         if current_val and current_val.strip() != '' and any(o.get('value') == current_val for o in valid_options):
                             continue
                             
+                        el_label = await self._get_element_label(input_el)
                         if valid_options:
                             selected_val = valid_options[0]['value']
                             await input_el.select_option(value=selected_val)
-                            print(f"Selected select option: {selected_val}")
+                            print(f"Selected select option: {selected_val}{el_label}")
                         elif len(options_data) > 1:
                             await input_el.select_option(index=1)
-                            print("Selected select option by index 1")
+                            print(f"Selected select option by index 1{el_label}")
                         else:
                             await input_el.select_option(index=0)
-                            print("Selected select option by index 0")
+                            print(f"Selected select option by index 0{el_label}")
                             
                         await input_el.dispatch_event('change')
                         await page.wait_for_timeout(300)
@@ -493,10 +512,11 @@ class NavigationHandler:
                     # Wait for validation to run
                     await page.wait_for_timeout(300)
 
+                    el_label = await self._get_element_label(input_el)
                     if dropdown_handled:
-                        print("Filled form field via dropdown selection")
+                        print(f"Filled form field via dropdown selection{el_label}")
                     else:
-                        print(f"Filled form field with: {fill_value}")
+                        print(f"Filled form field with: {fill_value}{el_label}")
                         
                     fields_filled += 1
                     await page.wait_for_timeout(self.config.form_filling.fill_delay)

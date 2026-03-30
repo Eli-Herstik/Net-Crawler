@@ -249,7 +249,18 @@ class APIMapper:
                     print(f"Failed to restore state to {base_url}: {e}")
                     continue
 
-            print(f"Clicking element {i+1}/{len(clickable_elements)} of depth {depth}")
+            # Get element text for logging
+            element_text = ""
+            try:
+                element_text = (await element.text_content() or "").strip()
+                if not element_text:
+                    element_text = (await element.get_attribute('aria-label') or "").strip()
+                if not element_text:
+                    element_text = (await element.get_attribute('title') or "").strip()
+            except:
+                pass
+            label = f" ('{element_text[:30]}')" if element_text else ""
+            print(f"Clicking element {i+1}/{len(clickable_elements)} of depth {depth}{label}")
 
             # Set interceptor context
             self.interceptor.set_context(page.url, depth)
