@@ -30,8 +30,13 @@ class NavigationHandler:
         except Exception:
             return False
 
-    async def _is_destructive_action(self, element: Locator, text: str = "") -> bool:
-        """Check if element action is destructive (logout, delete, etc.)."""
+    DESTRUCTIVE_PATTERNS = [
+        'logout', 'delete', 'remove', 'destroy', 'clear',
+        'close', 'cancel', 'dismiss', 'no thanks', 'x'
+    ]
+
+    async def _is_destructive_action(self, element, text: str = "") -> bool:
+        """Check if element action is destructive or dismissive (logout, delete, close, etc.)."""
         if not text:
             try:
                 text = await element.text_content() or ""
@@ -39,30 +44,37 @@ class NavigationHandler:
                 text = ""
 
         text_lower = text.lower()
+
+        # Gather all relevant attributes
         href = ""
-        try:
-            href = await element.get_attribute('href') or ""
-        except:
-            pass
-
-        href_lower = href.lower()
-
-        for pattern in self.config.exclude_patterns:
-            if pattern.lower() in text_lower or pattern.lower() in href_lower:
-                return True
-
-        # Check for common destructive classes/ids
         classes = ""
         element_id = ""
+        aria_label = ""
         try:
-            classes = await element.get_attribute('class') or ""
-            element_id = await element.get_attribute('id') or ""
+            href = (await element.get_attribute('href') or "").lower()
         except:
             pass
-        
-        destructive_patterns = ['logout', 'delete', 'remove', 'destroy', 'clear']
-        for pattern in destructive_patterns:
-            if pattern in classes.lower() or pattern in element_id.lower():
+        try:
+            classes = (await element.get_attribute('class') or "").lower()
+            element_id = (await element.get_attribute('id') or "").lower()
+        except:
+            pass
+        try:
+            aria_label = (await element.get_attribute('aria-label') or "").lower()
+        except:
+            pass
+
+        searchable = [text_lower, href, classes, element_id, aria_label]
+
+        # Check user-configured exclude patterns
+        for pattern in self.config.exclude_patterns:
+            pattern_lower = pattern.lower()
+            if any(pattern_lower in s for s in searchable):
+                return True
+
+        # Check built-in destructive/dismissive patterns
+        for pattern in self.DESTRUCTIVE_PATTERNS:
+            if any(pattern in s for s in searchable):
                 return True
 
         return False
@@ -573,43 +585,26 @@ class NavigationHandler:
                     # Find buttons and links inside the modal
                     interactive_elements = await modal_container.query_selector_all('button, a[href], [role="button"], input[type="submit"], input[type="button"]')
                     
-                    # Patterns for dismissive or destructive elements that should be skipped or done last
-                    skip_patterns = ['close', 'cancel', 'dismiss', 'no thanks', 'x', 'logout', 'delete', 'remove', 'destroy', 'clear']
-                    
                     for el in interactive_elements:
                         if not await el.is_visible():
                             continue
-                            
-                        # Check text and aria-label
-                        text_content = ''
+
+                        if await self._is_destructive_action(el):
+                            continue
+
+                        combined_text = ''
                         try:
-                            text_content = (await el.text_content() or '').lower()
+                            combined_text = (await el.text_content() or '').strip()
                         except:
                             pass
-                            
-                        aria_label = ''
+
+                        print(f"Clicking actionable element in modal: '{combined_text[:30]}'")
                         try:
-                            aria_label = (await el.get_attribute('aria-label') or '').lower()
-                        except:
-                            pass
-                            
-                        combined_text = f"{text_content} {aria_label}".strip()
-                        
-                        # Skip if dismissive or destructive
-                        is_skippable = False
-                        for pattern in skip_patterns:
-                            if pattern in combined_text.split() or combined_text == pattern:
-                                is_skippable = True
-                                break
-                                
-                        if not is_skippable:
-                            print(f"Clicking actionable element in modal: '{combined_text[:30]}'")
-                            try:
-                                await el.click(timeout=2000)
-                                await page.wait_for_timeout(1000)
-                                action_taken = True
-                            except Exception as click_err:
-                                print(f"Could not click modal element: {click_err}")
+                            await el.click(timeout=2000)
+                            await page.wait_for_timeout(1000)
+                            action_taken = True
+                        except Exception as click_err:
+                            print(f"Could not click modal element: {click_err}")
                 except Exception as e:
                     print(f"Error exploring modal elements: {e}")
             else:
