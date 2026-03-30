@@ -278,13 +278,13 @@ class NavigationHandler:
 
         max_passes = 3
         for pass_idx in range(max_passes):
-            fields_filled = await self._fill_page_forms_pass(page)
+            fields_filled = await self._fill_page_forms_pass(page, pass_idx)
             if fields_filled == 0:
                 break
             # Wait a little before the next pass to allow UI to update
             await page.wait_for_timeout(500)
 
-    async def _fill_page_forms_pass(self, page: Page) -> int:
+    async def _fill_page_forms_pass(self, page: Page, pass_idx: int = 0) -> int:
         fields_filled = 0
         try:
             # Find all visible inputs, textareas, and selects that are not disabled or readonly
@@ -300,6 +300,8 @@ class NavigationHandler:
                     
                     if tag_name == 'select':
                         current_val = await input_el.evaluate('el => el.value')
+                        if pass_idx > 0 and current_val and current_val.strip() != '':
+                            continue
                         options_data = await input_el.evaluate('''el => {
                             return Array.from(el.options).map((o, idx) => ({
                                 index: idx,
@@ -333,8 +335,12 @@ class NavigationHandler:
                         fields_filled += 1
                         continue
 
-                    # Check if already has value
-                    current_value = await input_el.get_attribute('value')
+                    # Check if already has value (use DOM property on subsequent passes
+                    # since get_attribute only reads the initial HTML attribute)
+                    if pass_idx > 0:
+                        current_value = await input_el.evaluate('el => el.value')
+                    else:
+                        current_value = await input_el.get_attribute('value')
                     if current_value:
                         continue
 
