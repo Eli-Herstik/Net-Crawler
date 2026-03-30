@@ -101,6 +101,7 @@ class NavigationHandler:
             '[onclick]',
             '[role="button"]',
             '[role="link"]',
+            '[role="menuitem"]',
             'input[type="button"]:not([disabled])'
         ]
 
@@ -563,7 +564,12 @@ class NavigationHandler:
                 '.modal',
                 '[class*="modal"]',
                 '.overlay',
-                '[class*="overlay"]'
+                '[class*="overlay"]',
+                '.cdk-overlay-container',
+                '.cdk-overlay-pane',
+                '[class*="cdk-overlay"]',
+                '.mat-mdc-menu-panel',
+                '[class*="mat-menu"]'
             ]
             
             for selector in container_selectors:
@@ -583,7 +589,7 @@ class NavigationHandler:
                 print("Modal container identified. Searching for interactive elements...")
                 try:
                     # Find buttons and links inside the modal
-                    interactive_elements = await modal_container.query_selector_all('button, a[href], [role="button"], input[type="submit"], input[type="button"]')
+                    interactive_elements = await modal_container.query_selector_all('button, a[href], [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]')
                     
                     for el in interactive_elements:
                         if not await el.is_visible():
