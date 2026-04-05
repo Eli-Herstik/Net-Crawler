@@ -96,8 +96,12 @@ class NavigationHandler:
 
     DESTRUCTIVE_PATTERNS = [
         'logout', 'delete', 'remove', 'destroy', 'clear',
-        'close', 'cancel', 'dismiss', 'no thanks', 'x'
+        'close', 'cancel', 'dismiss', 'no thanks',
     ]
+
+    # Patterns that should only match the visible text content exactly (stripped),
+    # not as substrings in URLs, classes, or other attributes.
+    DESTRUCTIVE_TEXT_EXACT = ['x', '\u00d7']  # "x" and "×" (close buttons)
 
     async def _is_destructive_action(self, element, text: str = "") -> bool:
         """Check if element action is destructive or dismissive (logout, delete, close, etc.)."""
@@ -107,7 +111,7 @@ class NavigationHandler:
             except Exception:
                 text = ""
 
-        text_lower = text.lower()
+        text_lower = text.strip().lower()
 
         # Gather all relevant attributes
         href = ""
@@ -136,10 +140,14 @@ class NavigationHandler:
             if any(pattern_lower in s for s in searchable):
                 return True
 
-        # Check built-in destructive/dismissive patterns
+        # Check built-in destructive/dismissive patterns (substring match)
         for pattern in self.DESTRUCTIVE_PATTERNS:
             if any(pattern in s for s in searchable):
                 return True
+
+        # Check exact-text-only patterns (e.g. "x" close buttons)
+        if text_lower in self.DESTRUCTIVE_TEXT_EXACT:
+            return True
 
         return False
 
