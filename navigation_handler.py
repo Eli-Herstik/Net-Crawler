@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from config_loader import Config
 import hashlib
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -319,15 +320,40 @@ class NavigationHandler:
             except Exception as click_err:
                 error_msg = str(click_err)
                 if 'intercepts pointer events' in error_msg:
-                    logger.warning("Element click intercepted (likely by a modal). Attempting to interact with overlay...")
-                    await self._handle_overlay(page)
-                    
-                    try:
-                        # Try clicking again
-                        await element.click(timeout=3000)
-                    except Exception as retry_err:
-                        logger.warning("Overlay still present, forcing click... (%s)", retry_err)
+                    # Extract the intercepting element's tag from Playwright's error message
+                    # Format: "<html lang="en" ...>…</html> intercepts pointer events"
+                    interceptor_match = re.search(r'<(\w+)\b', error_msg.split('intercepts pointer events')[0].rsplit('\n', 1)[-1])
+                    interceptor_tag = interceptor_match.group(1).lower() if interceptor_match else ''
+
+                    if interceptor_tag in ('html', 'body'):
+                        # Structural elements like <html> and <body> are never real modals
+                        logger.info("Click intercepted by <%s>, not a modal. Force-clicking.", interceptor_tag)
                         await element.click(timeout=3000, force=True)
+                    else:
+                        # Check if a real modal actually exists before running overlay handling
+                        has_modal = False
+                        for selector in MODAL_CONTAINER_SELECTORS:
+                            try:
+                                els = await page.query_selector_all(selector)
+                                for el in els:
+                                    if await el.is_visible():
+                                        has_modal = True
+                                        break
+                                if has_modal:
+                                    break
+                            except Exception:
+                                continue
+
+                        if has_modal:
+                            logger.warning("Element click intercepted by a modal. Attempting to interact with overlay...")
+                            await self._handle_overlay(page)
+                            try:
+                                await element.click(timeout=3000)
+                            except Exception:
+                                await element.click(timeout=3000, force=True)
+                        else:
+                            logger.info("Click intercepted but no modal detected. Force-clicking.")
+                            await element.click(timeout=3000, force=True)
                 else:
                     raise click_err
             
