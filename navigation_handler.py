@@ -307,8 +307,13 @@ class NavigationHandler:
             return False
 
         try:
+            # Skip elements that aren't visible
+            if not await element.is_visible():
+                logger.debug("Element is not visible, skipping click.")
+                return False
+
             # Scroll element into view
-            await element.scroll_into_view_if_needed()
+            await element.scroll_into_view_if_needed(timeout=3000)
             await page.wait_for_timeout(500)
 
             # Get URL before click
@@ -361,16 +366,16 @@ class NavigationHandler:
 
             # Wait for navigation or network activity
             try:
-                await page.wait_for_load_state('networkidle', timeout=self.config.wait_timeout)
+                await page.wait_for_load_state('networkidle', timeout=5000)
             except Exception:
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(1000)
 
             # Check if URL changed
             url_after = page.url
 
             # If SPA, wait a bit more for async updates
             if url_before == url_after:
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(300)
 
             return True
 
@@ -506,7 +511,6 @@ class NavigationHandler:
                             logger.debug("Selected select option by index 0%s", el_label)
                             
                         await input_el.dispatch_event('change')
-                        await page.wait_for_timeout(300)
                         await page.wait_for_timeout(self.config.form_filling.fill_delay)
                         fields_filled += 1
                         continue
@@ -589,7 +593,7 @@ class NavigationHandler:
                                 for opt in options:
                                     if await opt.is_visible():
                                         # Scroll into view and click
-                                        await opt.scroll_into_view_if_needed()
+                                        await opt.scroll_into_view_if_needed(timeout=1000)
                                         await opt.click(timeout=2000)
                                         logger.debug("Selected click-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
@@ -618,7 +622,7 @@ class NavigationHandler:
                                 options = await page.query_selector_all(opt_selector)
                                 for opt in options:
                                     if await opt.is_visible():
-                                        await opt.scroll_into_view_if_needed()
+                                        await opt.scroll_into_view_if_needed(timeout=1000)
                                         await opt.click(timeout=2000)
                                         logger.debug("Selected typing-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
@@ -642,7 +646,7 @@ class NavigationHandler:
                                     options = await page.query_selector_all(opt_selector)
                                     for opt in options:
                                         if await opt.is_visible():
-                                            await opt.scroll_into_view_if_needed()
+                                            await opt.scroll_into_view_if_needed(timeout=1000)
                                             await opt.click(timeout=2000)
                                             logger.debug("Selected cleared-typing dropdown option: %s", opt_selector)
                                             dropdown_handled = True
