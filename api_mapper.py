@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import List, Dict, Any, Set
 from urllib.parse import urlparse
 from datetime import datetime
@@ -6,6 +7,8 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from config_loader import Config
 from network_interceptor import NetworkInterceptor
 from navigation_handler import NavigationHandler
+
+logger = logging.getLogger(__name__)
 
 
 class APIMapper:
@@ -81,9 +84,7 @@ class APIMapper:
                 await self.interceptor.handle_response(request_data, response)
                 captured_urls.add(url_key)
             except Exception as e:
-                print(f"Error handling response for {url_key}: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error("Error handling response for %s: %s", url_key, e, exc_info=True)
                 # Still mark as captured to avoid retries
                 captured_urls.add(url_key)
             
@@ -138,7 +139,7 @@ class APIMapper:
                             captured_urls.add(url_key)
                         except Exception as body_error:
                             # Body might not be available, but we can still save the request
-                            print(f"Warning: Could not read body for {url_key}: {body_error}")
+                            logger.warning("Could not read body for %s: %s", url_key, body_error)
                             request_data['response'] = {
                                 'status': response.status if hasattr(response, 'status') else 0,
                                 'error': f'Body not available: {str(body_error)}',
@@ -173,7 +174,7 @@ class APIMapper:
             if not is_external_url(url_key):
                 return
 
-            print(f"DEBUG: intercepted request {url_key} (type: {request.resource_type})")
+            logger.debug("Intercepted request %s (type: %s)", url_key, request.resource_type)
 
             # Store request data for all requests 
             if url_key not in pending_requests:
@@ -201,11 +202,11 @@ class APIMapper:
 
     async def map_website(self) -> Dict[str, Any]:
         """Main mapping function."""
-        print(f"Starting API mapping for: {self.config.start_url}")
+        logger.info("Starting API mapping for: %s", self.config.start_url)
 
         # Navigate to start URL
         if not await self.navigator.navigate_to(self.page, self.config.start_url, 0):
-            print("Failed to navigate to start URL")
+            logger.error("Failed to navigate to start URL")
             return {"api_calls": []}
 
         self.interceptor.set_context(self.config.start_url, 0)
@@ -216,7 +217,7 @@ class APIMapper:
         # Get all api calls from interceptor
         api_calls = self._extract_relevant_data_from_requests()
 
-        print(f"Mapping complete. Found {len(api_calls)} unique api calls.")
+        logger.info("Mapping complete. Found %d unique api calls.", len(api_calls))
 
         return {"api_calls": api_calls}
 
@@ -226,14 +227,14 @@ class APIMapper:
             return
 
         base_url = page.url
-        print(f"Exploring page at depth {depth}: {base_url}")
+        logger.info("Exploring page at depth %d: %s", depth, base_url)
 
         # Fill forms first to enable submit buttons
         await self.navigator.fill_page_forms(page)
 
         # Get clickable elements
         clickable_elements = await self.navigator.get_clickable_elements(page)
-        print(f"Found {len(clickable_elements)} clickable elements")
+        logger.info("Found %d clickable elements", len(clickable_elements))
 
         # Click elements and explore
         for i, element in enumerate(clickable_elements):
@@ -242,11 +243,11 @@ class APIMapper:
                 
             # Verify we are still on the base page before clicking
             if page.url != base_url:
-                print(f"Restoring state: Expected {base_url}, got {page.url}")
+                logger.warning("Restoring state: Expected %s, got %s", base_url, page.url)
                 try:
                     await page.goto(base_url, wait_until='networkidle')
                 except Exception as e:
-                    print(f"Failed to restore state to {base_url}: {e}")
+                    logger.error("Failed to restore state to %s: %s", base_url, e)
                     continue
 
             # Get element text for logging
@@ -260,7 +261,7 @@ class APIMapper:
             except Exception:
                 pass
             label = f" ('{element_text[:30]}')" if element_text else ""
-            print(f"Clicking element {i+1}/{len(clickable_elements)} of depth {depth}{label}")
+            logger.debug("Clicking element %d/%d of depth %d%s", i+1, len(clickable_elements), depth, label)
 
             # Set interceptor context
             self.interceptor.set_context(page.url, depth)
@@ -295,7 +296,7 @@ class APIMapper:
                         # Restore parent page's click counter
                         self.navigator.clicks_on_current_page = saved_clicks
                     elif not should_follow:
-                        print(f"Skipping external/excluded URL: {current_url}")
+                        logger.debug("Skipping external/excluded URL: %s", current_url)
                     
                     # Always try to go back if we navigated away
                     try:
@@ -306,7 +307,7 @@ class APIMapper:
                         )
                         await page.wait_for_timeout(1000)
                     except Exception as e:
-                        print(f"Warning: Could not go back: {e}")
+                        logger.warning("Could not go back: %s", e)
                         # If go back fails, try explicit goto
                         try:
                             if page.url != base_url:
@@ -346,14 +347,14 @@ class APIMapper:
 
                     overlay_hash = await self.navigator._get_overlay_hash(container)
                     if overlay_hash in self.navigator.visited_overlay_hashes:
-                        print(f"Skipping already-seen overlay (hash: {overlay_hash[:8]})")
+                        logger.debug("Skipping already-seen overlay (hash: %s)", overlay_hash[:8])
                         continue
                     self.navigator.visited_overlay_hashes.add(overlay_hash)
 
                     # Fill any forms inside the popup before clicking its elements
                     await self.navigator.fill_page_forms(page, root=container)
 
-                    print(f"Found popup/menu with {len(interactive)} interactive elements")
+                    logger.debug("Found popup/menu with %d interactive elements", len(interactive))
                     for el in interactive:
                         try:
                             if not await el.is_visible():
@@ -366,7 +367,7 @@ class APIMapper:
                                 label = (await el.text_content() or '').strip()
                             except Exception:
                                 pass
-                            print(f"  Clicking popup element: '{label[:30]}'")
+                            logger.debug("  Clicking popup element: '%s'", label[:30])
 
                             self.interceptor.set_context(page.url, depth)
                             await el.click(timeout=3000)
@@ -391,7 +392,7 @@ class APIMapper:
                                     except Exception:
                                         pass
                         except Exception as e:
-                            print(f"  Could not click popup element: {e}")
+                            logger.warning("  Could not click popup element: %s", e)
                             continue
                     return  # found and processed a popup, done
             except Exception:
@@ -427,14 +428,14 @@ class APIMapper:
                                         )
                                         await page.wait_for_timeout(1000)
                                     except Exception as e:
-                                        print(f"Warning: Could not go back from {href}: {e}")
+                                        logger.warning("Could not go back from %s: %s", href, e)
                                         # Continue without going back
                                         pass
                 except Exception as e:
-                    print(f"Error processing link: {e}")
+                    logger.error("Error processing link: %s", e)
                     continue
         except Exception as e:
-            print(f"Error following links: {e}")
+            logger.error("Error following links: %s", e)
 
     def _extract_relevant_data_from_requests(self) -> List[Dict[str, Any]]:
         """Extract relevant data from captured requests."""

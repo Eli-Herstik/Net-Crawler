@@ -3,6 +3,9 @@ from playwright.async_api import Page, Locator
 from urllib.parse import urlparse
 from config_loader import Config
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class NavigationHandler:
@@ -199,7 +202,7 @@ class NavigationHandler:
             return True
 
         except Exception as e:
-            print(f"Navigation error to {url}: {e}")
+            logger.error("Navigation error to %s: %s", url, e)
             return False
 
     async def click_element(self, page: Page, element: Locator) -> bool:
@@ -221,14 +224,14 @@ class NavigationHandler:
             except Exception as click_err:
                 error_msg = str(click_err)
                 if 'intercepts pointer events' in error_msg:
-                    print("Element click intercepted (likely by a modal). Attempting to interact with overlay...")
+                    logger.warning("Element click intercepted (likely by a modal). Attempting to interact with overlay...")
                     await self._handle_overlay(page)
                     
                     try:
                         # Try clicking again
                         await element.click(timeout=3000)
                     except Exception as retry_err:
-                        print(f"Overlay still present, forcing click... ({retry_err})")
+                        logger.warning("Overlay still present, forcing click... (%s)", retry_err)
                         await element.click(timeout=3000, force=True)
                 else:
                     raise click_err
@@ -251,7 +254,7 @@ class NavigationHandler:
             return True
 
         except Exception as e:
-            print(f"Click error: {e}")
+            logger.error("Click error: %s", e)
             return False
 
     async def _get_element_label(self, input_el) -> str:
@@ -373,13 +376,13 @@ class NavigationHandler:
                         if valid_options:
                             selected_val = valid_options[0]['value']
                             await input_el.select_option(value=selected_val)
-                            print(f"Selected select option: {selected_val}{el_label}")
+                            logger.debug("Selected select option: %s%s", selected_val, el_label)
                         elif len(options_data) > 1:
                             await input_el.select_option(index=1)
-                            print(f"Selected select option by index 1{el_label}")
+                            logger.debug("Selected select option by index 1%s", el_label)
                         else:
                             await input_el.select_option(index=0)
-                            print(f"Selected select option by index 0{el_label}")
+                            logger.debug("Selected select option by index 0%s", el_label)
                             
                         await input_el.dispatch_event('change')
                         await page.wait_for_timeout(300)
@@ -435,7 +438,7 @@ class NavigationHandler:
                     # Ensure value meets minimum length requirement
                     if min_length > 0:
                         fill_value = await self._generate_value_with_length(fill_value, min_length)
-                        print(f"Adjusted value to meet minimum length {min_length}")
+                        logger.debug("Adjusted value to meet minimum length %d", min_length)
 
                     # Clear the field first
                     try:
@@ -467,7 +470,7 @@ class NavigationHandler:
                                         # Scroll into view and click
                                         await opt.scroll_into_view_if_needed()
                                         await opt.click(timeout=2000)
-                                        print(f"Selected click-triggered dropdown option: {opt_selector}")
+                                        logger.debug("Selected click-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
                                         await page.wait_for_timeout(300)
                                         break
@@ -476,7 +479,7 @@ class NavigationHandler:
                             except Exception:
                                 continue
                     except Exception as e:
-                        print(f"Error checking click dropdown: {e}")
+                        logger.warning("Error checking click dropdown: %s", e)
 
                     if not dropdown_handled:
                         # Fill the value character by character to trigger validation
@@ -496,7 +499,7 @@ class NavigationHandler:
                                     if await opt.is_visible():
                                         await opt.scroll_into_view_if_needed()
                                         await opt.click(timeout=2000)
-                                        print(f"Selected typing-triggered dropdown option: {opt_selector}")
+                                        logger.debug("Selected typing-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
                                         await page.wait_for_timeout(300)
                                         break
@@ -520,7 +523,7 @@ class NavigationHandler:
                                         if await opt.is_visible():
                                             await opt.scroll_into_view_if_needed()
                                             await opt.click(timeout=2000)
-                                            print(f"Selected cleared-typing dropdown option: {opt_selector}")
+                                            logger.debug("Selected cleared-typing dropdown option: %s", opt_selector)
                                             dropdown_handled = True
                                             await page.wait_for_timeout(300)
                                             break
@@ -547,9 +550,9 @@ class NavigationHandler:
 
                     el_label = await self._get_element_label(input_el)
                     if dropdown_handled:
-                        print(f"Filled form field via dropdown selection{el_label}")
+                        logger.debug("Filled form field via dropdown selection%s", el_label)
                     else:
-                        print(f"Filled form field with: {fill_value}{el_label}")
+                        logger.debug("Filled form field with: %s%s", fill_value, el_label)
                         
                     fields_filled += 1
                     await page.wait_for_timeout(self.config.form_filling.fill_delay)
@@ -562,13 +565,13 @@ class NavigationHandler:
             await page.wait_for_timeout(500)
 
         except Exception as e:
-            print(f"Error filling forms: {e}")
+            logger.error("Error filling forms: %s", e)
 
         return fields_filled
 
     async def _handle_overlay(self, page: Page):
         """Attempt to interact with and then dismiss any blocking modals."""
-        print("Handling overlay: attempting affirmative actions first...")
+        logger.info("Handling overlay: attempting affirmative actions first...")
         try:
             # 1. Identify active modal container
             modal_container = None
@@ -603,7 +606,7 @@ class NavigationHandler:
             
             action_taken = False
             if modal_container:
-                print("Modal container identified. Filling forms and searching for interactive elements...")
+                logger.info("Modal container identified. Filling forms and searching for interactive elements...")
                 # Fill forms scoped to the modal container
                 await self.fill_page_forms(page, root=modal_container)
                 try:
@@ -623,17 +626,17 @@ class NavigationHandler:
                         except Exception:
                             pass
 
-                        print(f"Clicking actionable element in modal: '{combined_text[:30]}'")
+                        logger.debug("Clicking actionable element in modal: '%s'", combined_text[:30])
                         try:
                             await el.click(timeout=2000)
                             await page.wait_for_timeout(1000)
                             action_taken = True
                         except Exception as click_err:
-                            print(f"Could not click modal element: {click_err}")
+                            logger.warning("Could not click modal element: %s", click_err)
                 except Exception as e:
-                    print(f"Error exploring modal elements: {e}")
+                    logger.error("Error exploring modal elements: %s", e)
             else:
-                print("Could not explicitly identify modal container. Falling back to targeted selectors.")
+                logger.info("Could not explicitly identify modal container. Falling back to targeted selectors.")
                 # Fallback to the old method
                 action_selectors = [
                     'button:has-text("Confirm")',
@@ -654,7 +657,7 @@ class NavigationHandler:
                         elements = await page.query_selector_all(selector)
                         for el in elements:
                             if await el.is_visible():
-                                print(f"Clicking affirmative action as fallback: {selector}")
+                                logger.debug("Clicking affirmative action as fallback: %s", selector)
                                 await el.click(timeout=2000)
                                 await page.wait_for_timeout(1000)
                                 action_taken = True
@@ -682,7 +685,7 @@ class NavigationHandler:
                     elements = await page.query_selector_all(selector)
                     for el in elements:
                         if await el.is_visible():
-                            print(f"Clicking dismiss action in overlay: {selector}")
+                            logger.debug("Clicking dismiss action in overlay: %s", selector)
                             await el.click(timeout=2000)
                             await page.wait_for_timeout(500)
                 except Exception:
@@ -693,7 +696,7 @@ class NavigationHandler:
             await page.wait_for_timeout(500)
             
         except Exception as e:
-            print(f"Error while trying to handle overlay: {e}")
+            logger.error("Error while trying to handle overlay: %s", e)
 
     def reset_page_counters(self):
         """Reset counters for new page."""

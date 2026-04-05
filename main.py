@@ -2,10 +2,13 @@
 import asyncio
 import json
 import argparse
+import logging
 import sys
 from pathlib import Path
 from config_loader import load_config
 from api_mapper import APIMapper
+
+logger = logging.getLogger(__name__)
 
 
 async def main():
@@ -13,20 +16,28 @@ async def main():
     parser = argparse.ArgumentParser(description='API Mapping System')
     parser.add_argument('--config', '-c', required=True, help='Path to configuration JSON file')
     parser.add_argument('--output', '-o', help='Output file path (overrides config)')
-    
+    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose (DEBUG) logging')
+
     args = parser.parse_args()
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%H:%M:%S'
+    )
 
     # Load configuration
     config_path = Path(args.config)
     if not config_path.exists():
-        print(f"Error: Configuration file not found: {config_path}")
+        logger.error("Configuration file not found: %s", config_path)
         sys.exit(1)
 
     try:
         config = load_config(str(config_path))
-        print("Configuration loaded successfully")
+        logger.info("Configuration loaded successfully")
     except Exception as e:
-        print(f"Error loading configuration: {e}")
+        logger.error("Error loading configuration: %s", e)
         sys.exit(1)
 
     # Override output file if provided
@@ -39,7 +50,7 @@ async def main():
     try:
         # Initialize
         await mapper.initialize()
-        print("Browser initialized")
+        logger.info("Browser initialized")
 
         # Run mapping
         result = await mapper.map_website()
@@ -49,20 +60,18 @@ async def main():
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        print(f"\n✓ Mapping complete!")
-        print(f"✓ Found {len(result.get('api_calls', []))} unique api calls")
-        print(f"✓ Results saved to: {output_path}")
+        logger.info("Mapping complete!")
+        logger.info("Found %d unique api calls", len(result.get('api_calls', [])))
+        logger.info("Results saved to: %s", output_path)
 
     except KeyboardInterrupt:
-        print("\n\nMapping interrupted by user")
+        logger.info("Mapping interrupted by user")
     except Exception as e:
-        print(f"\nError during mapping: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("Error during mapping: %s", e)
         sys.exit(1)
     finally:
         await mapper.cleanup()
-        print("Cleanup complete")
+        logger.info("Cleanup complete")
 
 
 if __name__ == '__main__':

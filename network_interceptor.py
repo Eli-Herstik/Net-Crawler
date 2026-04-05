@@ -3,8 +3,11 @@ from typing import Dict, Any, List, Optional
 from playwright.async_api import Request, Response, Route
 from datetime import datetime
 import json
+import logging
 import re
 from urllib.parse import urlparse, parse_qs
+
+logger = logging.getLogger(__name__)
 
 
 class NetworkInterceptor:
@@ -157,9 +160,7 @@ class NetworkInterceptor:
             self.requests.append(request_data)
             return request_data
         except Exception as e:
-            print(f"Error handling response for {request_data.get('url')}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Error handling response for %s: %s", request_data.get('url'), e, exc_info=True)
             # Safely get status if response exists and is valid
             status = 0
             if response and hasattr(response, 'status'):
