@@ -14,6 +14,7 @@ class NavigationHandler:
         self.visited_dom_hashes: Set[str] = set()
         self.current_depth = 0
         self.clicks_on_current_page = 0
+        self.visited_overlay_hashes: Set[str] = set()
 
     def _should_follow_url(self, url: str) -> bool:
         """Determine if URL should be followed."""
@@ -91,6 +92,24 @@ class NavigationHandler:
             return hashlib.md5(cleaned.encode()).hexdigest()
         except:
             return ""
+
+    async def _get_overlay_hash(self, container) -> str:
+        """Fingerprint an overlay by its interactive elements' tags and text."""
+        interactive = await container.query_selector_all(
+            'button, a[href], [role="button"], [role="menuitem"], '
+            '[role="option"], input[type="submit"], input[type="button"]'
+        )
+        parts = []
+        for el in interactive:
+            try:
+                tag = await el.evaluate('el => el.tagName.toLowerCase()')
+                text = (await el.text_content() or '').strip().lower()
+                parts.append(f"{tag}:{text}")
+            except:
+                continue
+        parts.sort()
+        fingerprint = '|'.join(parts)
+        return hashlib.md5(fingerprint.encode()).hexdigest()
 
     async def get_clickable_elements(self, page: Page) -> List[Locator]:
         """Get all clickable elements on current page."""

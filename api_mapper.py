@@ -275,6 +275,12 @@ class APIMapper:
                 current_url = page.url
                 
                 # Use base_url to detect navigation
+                if current_url == base_url:
+                    # No navigation — check if new interactive elements appeared (e.g. menu/dropdown)
+                    await self._interact_with_new_elements(page, depth)
+                    # Re-check URL since popup interactions may have navigated
+                    current_url = page.url
+
                 if current_url != base_url:
                     # Check if we should follow this URL
                     should_follow = self.navigator._should_follow_url(current_url)
@@ -310,6 +316,83 @@ class APIMapper:
 
         # Also try to follow links on the page
         await self._follow_links_on_page(page, depth)
+
+    async def _interact_with_new_elements(self, page: Page, depth: int):
+        """After a non-navigating click, check for newly appeared elements (menus, dropdowns) and interact with them."""
+        base_url = page.url
+        popup_selectors = [
+            '.cdk-overlay-pane',
+            '[class*="cdk-overlay"]',
+            '.mat-mdc-menu-panel',
+            '[class*="mat-menu"]',
+            '[role="menu"]',
+            '[role="listbox"]',
+            '.dropdown-menu',
+            '[class*="dropdown"]',
+        ]
+
+        for selector in popup_selectors:
+            try:
+                containers = await page.query_selector_all(selector)
+                for container in containers:
+                    if not await container.is_visible():
+                        continue
+
+                    interactive = await container.query_selector_all(
+                        'button, a[href], [role="button"], [role="menuitem"], [role="option"], input[type="submit"], input[type="button"]'
+                    )
+                    if not interactive:
+                        continue
+
+                    overlay_hash = await self.navigator._get_overlay_hash(container)
+                    if overlay_hash in self.navigator.visited_overlay_hashes:
+                        print(f"Skipping already-seen overlay (hash: {overlay_hash[:8]})")
+                        continue
+                    self.navigator.visited_overlay_hashes.add(overlay_hash)
+
+                    print(f"Found popup/menu with {len(interactive)} interactive elements")
+                    for el in interactive:
+                        try:
+                            if not await el.is_visible():
+                                continue
+                            if await self.navigator._is_destructive_action(el):
+                                continue
+
+                            label = ''
+                            try:
+                                label = (await el.text_content() or '').strip()
+                            except:
+                                pass
+                            print(f"  Clicking popup element: '{label[:30]}'")
+
+                            self.interceptor.set_context(page.url, depth)
+                            await el.click(timeout=3000)
+                            await page.wait_for_timeout(self.config.network_idle_timeout)
+
+                            current_url = page.url
+                            if current_url != base_url:
+                                should_follow = self.navigator._should_follow_url(current_url)
+                                if should_follow and current_url not in self.navigator.visited_urls:
+                                    self.navigator.visited_urls.add(current_url)
+                                    saved_clicks = self.navigator.clicks_on_current_page
+                                    self.navigator.clicks_on_current_page = 0
+                                    await self._explore_page(page, depth + 1)
+                                    self.navigator.clicks_on_current_page = saved_clicks
+                                try:
+                                    await page.go_back(wait_until='load', timeout=self.config.wait_timeout)
+                                    await page.wait_for_timeout(1000)
+                                except Exception:
+                                    try:
+                                        if page.url != base_url:
+                                            await page.goto(base_url, wait_until='networkidle')
+                                    except:
+                                        pass
+                        except Exception as e:
+                            print(f"  Could not click popup element: {e}")
+                            continue
+                    return  # found and processed a popup, done
+            except Exception:
+                continue
 
     async def _follow_links_on_page(self, page: Page, depth: int):
         """Follow links on current page."""
