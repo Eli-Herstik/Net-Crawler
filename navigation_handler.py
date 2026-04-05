@@ -321,25 +321,26 @@ class NavigationHandler:
             padding_needed = min_length - len(base_value)
             return base_value + 'x' * padding_needed
 
-    async def fill_page_forms(self, page: Page):
-        """Fill forms on the page to enable submit buttons."""
+    async def fill_page_forms(self, page: Page, root=None):
+        """Fill forms on the page (or within a specific container) to enable submit buttons."""
         if not self.config.form_filling or not self.config.form_filling.enabled:
             return
 
         max_passes = 3
         for pass_idx in range(max_passes):
-            fields_filled = await self._fill_page_forms_pass(page, pass_idx)
+            fields_filled = await self._fill_page_forms_pass(page, pass_idx, root=root)
             if fields_filled == 0:
                 break
             # Wait a little before the next pass to allow UI to update
             await page.wait_for_timeout(500)
 
-    async def _fill_page_forms_pass(self, page: Page, pass_idx: int = 0) -> int:
+    async def _fill_page_forms_pass(self, page: Page, pass_idx: int = 0, root=None) -> int:
         fields_filled = 0
+        query_root = root or page
         try:
             # Find all visible inputs, textareas, and selects that are not disabled or readonly
             # Include readonly inputs as they might be custom click-triggered dropdowns
-            inputs = await page.query_selector_all('input:not([type="hidden"]):not([disabled]), textarea:not([disabled]):not([readonly]), select:not([disabled])')
+            inputs = await query_root.query_selector_all('input:not([type="hidden"]):not([disabled]), textarea:not([disabled]):not([readonly]), select:not([disabled])')
 
             for input_el in inputs:
                 try:
@@ -567,12 +568,9 @@ class NavigationHandler:
 
     async def _handle_overlay(self, page: Page):
         """Attempt to interact with and then dismiss any blocking modals."""
-        print("Handling overlay: filling forms and attempting affirmative actions first...")
+        print("Handling overlay: attempting affirmative actions first...")
         try:
-            # 1. Fill any forms that might be in the new modal
-            await self.fill_page_forms(page)
-            
-            # 2. Identify active modal container
+            # 1. Identify active modal container
             modal_container = None
             container_selectors = [
                 'dialog[open]',
@@ -605,7 +603,9 @@ class NavigationHandler:
             
             action_taken = False
             if modal_container:
-                print("Modal container identified. Searching for interactive elements...")
+                print("Modal container identified. Filling forms and searching for interactive elements...")
+                # Fill forms scoped to the modal container
+                await self.fill_page_forms(page, root=modal_container)
                 try:
                     # Find buttons and links inside the modal
                     interactive_elements = await modal_container.query_selector_all('button, a[href], [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]')
