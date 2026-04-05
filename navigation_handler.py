@@ -41,7 +41,7 @@ class NavigationHandler:
         if not text:
             try:
                 text = await element.text_content() or ""
-            except:
+            except Exception:
                 text = ""
 
         text_lower = text.lower()
@@ -53,16 +53,16 @@ class NavigationHandler:
         aria_label = ""
         try:
             href = (await element.get_attribute('href') or "").lower()
-        except:
+        except Exception:
             pass
         try:
             classes = (await element.get_attribute('class') or "").lower()
             element_id = (await element.get_attribute('id') or "").lower()
-        except:
+        except Exception:
             pass
         try:
             aria_label = (await element.get_attribute('aria-label') or "").lower()
-        except:
+        except Exception:
             pass
 
         searchable = [text_lower, href, classes, element_id, aria_label]
@@ -90,7 +90,7 @@ class NavigationHandler:
             cleaned = re.sub(r'id="[^"]*\d{10,}[^"]*"', 'id="dynamic"', dom_content)
             cleaned = re.sub(r'data-[^=]*="[^"]*\d{10,}[^"]*"', '', cleaned)
             return hashlib.md5(cleaned.encode()).hexdigest()
-        except:
+        except Exception:
             return ""
 
     async def _get_overlay_hash(self, container) -> str:
@@ -105,7 +105,7 @@ class NavigationHandler:
                 tag = await el.evaluate('el => el.tagName.toLowerCase()')
                 text = (await el.text_content() or '').strip().lower()
                 parts.append(f"{tag}:{text}")
-            except:
+            except Exception:
                 continue
         parts.sort()
         fingerprint = '|'.join(parts)
@@ -141,7 +141,7 @@ class NavigationHandler:
                             if elem_html in seen_elements:
                                 continue
                             seen_elements.add(elem_html)
-                        except:
+                        except Exception:
                             pass
 
                         # Check if visible and not destructive
@@ -162,11 +162,11 @@ class NavigationHandler:
                                     all_elements.append(locator)
                                     if len(all_elements) >= self.config.max_clicks_per_page:
                                         return all_elements
-                        except:
+                        except Exception:
                             continue
-                    except:
+                    except Exception:
                         continue
-            except:
+            except Exception:
                 continue
 
         return all_elements[:self.config.max_clicks_per_page]
@@ -238,7 +238,7 @@ class NavigationHandler:
             # Wait for navigation or network activity
             try:
                 await page.wait_for_load_state('networkidle', timeout=self.config.wait_timeout)
-            except:
+            except Exception:
                 await page.wait_for_timeout(2000)
 
             # Check if URL changed
@@ -268,7 +268,7 @@ class NavigationHandler:
                 text = (await input_el.get_attribute('id') or "").strip()
             if text:
                 return f" ('{text[:30]}')"
-        except:
+        except Exception:
             pass
         return ""
 
@@ -297,7 +297,7 @@ class NavigationHandler:
                 if input_type == 'password':
                     return 8  # Common password minimum
 
-        except:
+        except Exception:
             pass
 
         return 0
@@ -620,7 +620,7 @@ class NavigationHandler:
                         combined_text = ''
                         try:
                             combined_text = (await el.text_content() or '').strip()
-                        except:
+                        except Exception:
                             pass
 
                         print(f"Clicking actionable element in modal: '{combined_text[:30]}'")

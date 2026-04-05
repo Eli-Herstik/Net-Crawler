@@ -257,7 +257,7 @@ class APIMapper:
                     element_text = (await element.get_attribute('aria-label') or "").strip()
                 if not element_text:
                     element_text = (await element.get_attribute('title') or "").strip()
-            except:
+            except Exception:
                 pass
             label = f" ('{element_text[:30]}')" if element_text else ""
             print(f"Clicking element {i+1}/{len(clickable_elements)} of depth {depth}{label}")
@@ -311,7 +311,7 @@ class APIMapper:
                         try:
                             if page.url != base_url:
                                 await page.goto(base_url, wait_until='networkidle')
-                        except:
+                        except Exception:
                             pass
 
         # Also try to follow links on the page
@@ -364,7 +364,7 @@ class APIMapper:
                             label = ''
                             try:
                                 label = (await el.text_content() or '').strip()
-                            except:
+                            except Exception:
                                 pass
                             print(f"  Clicking popup element: '{label[:30]}'")
 
@@ -388,7 +388,7 @@ class APIMapper:
                                     try:
                                         if page.url != base_url:
                                             await page.goto(base_url, wait_until='networkidle')
-                                    except:
+                                    except Exception:
                                         pass
                         except Exception as e:
                             print(f"  Could not click popup element: {e}")

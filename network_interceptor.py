@@ -117,7 +117,7 @@ class NetworkInterceptor:
                 # Check if headers is a coroutine
                 if hasattr(headers, '__await__'):
                     headers = await headers
-            except:
+            except Exception:
                 headers = {}
            
             response_data = {
@@ -165,7 +165,7 @@ class NetworkInterceptor:
             if response and hasattr(response, 'status'):
                 try:
                     status = response.status
-                except:
+                except Exception:
                     status = 0
             
             request_data['response'] = {
@@ -213,7 +213,7 @@ class NetworkInterceptor:
                 return "Generic OAuth2/OIDC Endpoint"
             
             return None
-        except:
+        except Exception:
             return None
 
 
