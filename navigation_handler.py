@@ -144,15 +144,54 @@ class NavigationHandler:
         return False
 
     async def _get_dom_hash(self, page: Page) -> str:
-        """Generate hash of current DOM state."""
+        """Generate hash of meaningful DOM structure to detect duplicate pages."""
         try:
-            dom_content = await page.content()
-            # Remove dynamic parts that change but don't affect structure
-            import re
-            # Remove timestamps, random IDs, etc.
-            cleaned = re.sub(r'id="[^"]*\d{10,}[^"]*"', 'id="dynamic"', dom_content)
-            cleaned = re.sub(r'data-[^=]*="[^"]*\d{10,}[^"]*"', '', cleaned)
-            return hashlib.md5(cleaned.encode()).hexdigest()
+            fingerprint = await page.evaluate("""() => {
+                const SKIP = new Set(['SCRIPT','STYLE','SVG','NOSCRIPT']);
+                const URL_ATTRS = new Set(['href','src','action']);
+                const KEEP_ATTRS = ['href','src','action','type','name','role'];
+
+                function normUrl(u) {
+                    if (!u) return '';
+                    try { return new URL(u, location.origin).pathname; }
+                    catch(e) { return u; }
+                }
+
+                function walk(node) {
+                    if (!node) return '';
+                    let out = '';
+                    for (let c = node.firstChild; c; c = c.nextSibling) {
+                        if (c.nodeType === 8) continue;
+                        if (c.nodeType === 3) {
+                            let t = c.textContent.trim().replace(/\\s+/g, ' ');
+                            if (t) out += t;
+                            continue;
+                        }
+                        if (c.nodeType !== 1) continue;
+                        let tag = c.tagName;
+                        if (SKIP.has(tag)) continue;
+                        if (tag === 'INPUT' && c.type === 'hidden') continue;
+                        let lt = tag.toLowerCase();
+                        out += '<' + lt;
+                        for (let a of KEEP_ATTRS) {
+                            let v = c.getAttribute(a);
+                            if (v != null) {
+                                if (URL_ATTRS.has(a)) v = normUrl(v);
+                                out += ' ' + a + '="' + v + '"';
+                            }
+                        }
+                        out += '>';
+                        out += walk(c);
+                        out += '</' + lt + '>';
+                    }
+                    return out;
+                }
+
+                return walk(document.body);
+            }""")
+            if not fingerprint:
+                return ""
+            return hashlib.md5(fingerprint.encode()).hexdigest()
         except Exception:
             return ""
 
