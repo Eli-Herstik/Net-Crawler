@@ -350,6 +350,9 @@ class APIMapper:
                         continue
                     self.navigator.visited_overlay_hashes.add(overlay_hash)
 
+                    # Fill any forms inside the popup before clicking its elements
+                    await self.navigator.fill_page_forms(page, root=container)
+
                     print(f"Found popup/menu with {len(interactive)} interactive elements")
                     for el in interactive:
                         try:
