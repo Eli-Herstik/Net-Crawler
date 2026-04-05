@@ -7,6 +7,66 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Selectors for interactive elements inside overlays/popups/modals
+INTERACTIVE_SELECTORS = (
+    'button, a[href], [role="button"], [role="menuitem"], '
+    '[role="option"], input[type="submit"], input[type="button"]'
+)
+
+# Selectors for clickable elements on a page (superset with :not([disabled]) filters)
+CLICKABLE_SELECTORS = [
+    'a[href]',
+    'button:not([disabled])',
+    'input[type="submit"]:not([disabled])',
+    '[onclick]',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="menuitem"]',
+    'input[type="button"]:not([disabled])',
+]
+
+# Selectors for modal/dialog containers
+MODAL_CONTAINER_SELECTORS = [
+    'dialog[open]',
+    '[role="dialog"]',
+    '[role="alertdialog"]',
+    '.modal-content',
+    '.modal-dialog',
+    '.modal',
+    '[class*="modal"]',
+    '.overlay',
+    '[class*="overlay"]',
+    '.cdk-overlay-container',
+    '.cdk-overlay-pane',
+    '[class*="cdk-overlay"]',
+    '.mat-mdc-menu-panel',
+    '[class*="mat-menu"]',
+]
+
+# Selectors for popup/menu containers (menus, dropdowns, listboxes)
+POPUP_CONTAINER_SELECTORS = [
+    '.cdk-overlay-pane',
+    '[class*="cdk-overlay"]',
+    '.mat-mdc-menu-panel',
+    '[class*="mat-menu"]',
+    '[role="menu"]',
+    '[role="listbox"]',
+    '.dropdown-menu',
+    '[class*="dropdown"]',
+]
+
+# Selectors for dismissing overlays/modals
+DISMISS_SELECTORS = [
+    'button[aria-label="Close"]',
+    'button[aria-label="close"]',
+    '.close-button',
+    '.modal-close',
+    'button:has-text("Close")',
+    'button:has-text("Cancel")',
+    'button:has-text("No thanks")',
+    'button:has-text("Dismiss")',
+]
+
 
 class NavigationHandler:
     """Handle smart navigation through website."""
@@ -98,10 +158,7 @@ class NavigationHandler:
 
     async def _get_overlay_hash(self, container) -> str:
         """Fingerprint an overlay by its interactive elements' tags and text."""
-        interactive = await container.query_selector_all(
-            'button, a[href], [role="button"], [role="menuitem"], '
-            '[role="option"], input[type="submit"], input[type="button"]'
-        )
+        interactive = await container.query_selector_all(INTERACTIVE_SELECTORS)
         parts = []
         for el in interactive:
             try:
@@ -116,16 +173,7 @@ class NavigationHandler:
 
     async def get_clickable_elements(self, page: Page) -> List[Locator]:
         """Get all clickable elements on current page."""
-        clickable_selectors = [
-            'a[href]',
-            'button:not([disabled])',
-            'input[type="submit"]:not([disabled])',
-            '[onclick]',
-            '[role="button"]',
-            '[role="link"]',
-            '[role="menuitem"]',
-            'input[type="button"]:not([disabled])'
-        ]
+        clickable_selectors = CLICKABLE_SELECTORS
 
         all_elements = []
         seen_elements = set()
@@ -575,22 +623,7 @@ class NavigationHandler:
         try:
             # 1. Identify active modal container
             modal_container = None
-            container_selectors = [
-                'dialog[open]',
-                '[role="dialog"]',
-                '[role="alertdialog"]',
-                '.modal-content',
-                '.modal-dialog',
-                '.modal',
-                '[class*="modal"]',
-                '.overlay',
-                '[class*="overlay"]',
-                '.cdk-overlay-container',
-                '.cdk-overlay-pane',
-                '[class*="cdk-overlay"]',
-                '.mat-mdc-menu-panel',
-                '[class*="mat-menu"]'
-            ]
+            container_selectors = MODAL_CONTAINER_SELECTORS
             
             for selector in container_selectors:
                 try:
@@ -611,7 +644,7 @@ class NavigationHandler:
                 await self.fill_page_forms(page, root=modal_container)
                 try:
                     # Find buttons and links inside the modal
-                    interactive_elements = await modal_container.query_selector_all('button, a[href], [role="button"], [role="menuitem"], input[type="submit"], input[type="button"]')
+                    interactive_elements = await modal_container.query_selector_all(INTERACTIVE_SELECTORS)
                     
                     for el in interactive_elements:
                         if not await el.is_visible():
@@ -669,16 +702,7 @@ class NavigationHandler:
                 await page.wait_for_timeout(1000)
             
             # 3. Dismissal (fallback if affirmative actions didn't close it or weren't found)
-            dismiss_selectors = [
-                'button[aria-label="Close"]',
-                'button[aria-label="close"]',
-                '.close-button',
-                '.modal-close',
-                'button:has-text("Close")',
-                'button:has-text("Cancel")',
-                'button:has-text("No thanks")',
-                'button:has-text("Dismiss")',
-            ]
+            dismiss_selectors = DISMISS_SELECTORS
             
             for selector in dismiss_selectors:
                 try:

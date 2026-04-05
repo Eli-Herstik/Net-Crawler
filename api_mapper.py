@@ -6,7 +6,7 @@ from datetime import datetime
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from config_loader import Config
 from network_interceptor import NetworkInterceptor
-from navigation_handler import NavigationHandler
+from navigation_handler import NavigationHandler, INTERACTIVE_SELECTORS, POPUP_CONTAINER_SELECTORS
 
 logger = logging.getLogger(__name__)
 
@@ -321,16 +321,7 @@ class APIMapper:
     async def _interact_with_new_elements(self, page: Page, depth: int):
         """After a non-navigating click, check for newly appeared elements (menus, dropdowns) and interact with them."""
         base_url = page.url
-        popup_selectors = [
-            '.cdk-overlay-pane',
-            '[class*="cdk-overlay"]',
-            '.mat-mdc-menu-panel',
-            '[class*="mat-menu"]',
-            '[role="menu"]',
-            '[role="listbox"]',
-            '.dropdown-menu',
-            '[class*="dropdown"]',
-        ]
+        popup_selectors = POPUP_CONTAINER_SELECTORS
 
         for selector in popup_selectors:
             try:
@@ -339,9 +330,7 @@ class APIMapper:
                     if not await container.is_visible():
                         continue
 
-                    interactive = await container.query_selector_all(
-                        'button, a[href], [role="button"], [role="menuitem"], [role="option"], input[type="submit"], input[type="button"]'
-                    )
+                    interactive = await container.query_selector_all(INTERACTIVE_SELECTORS)
                     if not interactive:
                         continue
 
