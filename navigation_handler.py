@@ -313,8 +313,13 @@ class NavigationHandler:
                 return False
 
             # Scroll element into view
-            await element.scroll_into_view_if_needed(timeout=3000)
-            await page.wait_for_timeout(500)
+            scroll_failed = False
+            try:
+                await element.scroll_into_view_if_needed(timeout=5000)
+                await page.wait_for_timeout(500)
+            except Exception as scroll_err:
+                scroll_failed = True
+                logger.debug("Scroll failed: %s. Attempting click without scroll.", scroll_err)
 
             # Get URL before click
             url_before = page.url
@@ -360,7 +365,11 @@ class NavigationHandler:
                             logger.info("Click intercepted but no modal detected. Force-clicking.")
                             await element.click(timeout=3000, force=True)
                 else:
-                    raise click_err
+                    # For non-interception errors, try force-click as last resort
+                    try:
+                        await element.click(timeout=3000, force=True)
+                    except Exception:
+                        raise click_err
             
             self.clicks_on_current_page += 1
 
@@ -593,7 +602,10 @@ class NavigationHandler:
                                 for opt in options:
                                     if await opt.is_visible():
                                         # Scroll into view and click
-                                        await opt.scroll_into_view_if_needed(timeout=1000)
+                                        try:
+                                            await opt.scroll_into_view_if_needed(timeout=2000)
+                                        except Exception:
+                                            pass
                                         await opt.click(timeout=2000)
                                         logger.debug("Selected click-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
@@ -622,7 +634,10 @@ class NavigationHandler:
                                 options = await page.query_selector_all(opt_selector)
                                 for opt in options:
                                     if await opt.is_visible():
-                                        await opt.scroll_into_view_if_needed(timeout=1000)
+                                        try:
+                                            await opt.scroll_into_view_if_needed(timeout=2000)
+                                        except Exception:
+                                            pass
                                         await opt.click(timeout=2000)
                                         logger.debug("Selected typing-triggered dropdown option: %s", opt_selector)
                                         dropdown_handled = True
@@ -646,7 +661,10 @@ class NavigationHandler:
                                     options = await page.query_selector_all(opt_selector)
                                     for opt in options:
                                         if await opt.is_visible():
-                                            await opt.scroll_into_view_if_needed(timeout=1000)
+                                            try:
+                                                await opt.scroll_into_view_if_needed(timeout=2000)
+                                            except Exception:
+                                                pass
                                             await opt.click(timeout=2000)
                                             logger.debug("Selected cleared-typing dropdown option: %s", opt_selector)
                                             dropdown_handled = True
