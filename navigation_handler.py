@@ -26,6 +26,28 @@ CLICKABLE_SELECTORS = [
     'input[type="button"]:not([disabled])',
 ]
 
+# Date picker patterns to skip (substring match against class, id, aria-label, name)
+DATE_PICKER_PATTERNS = [
+    'datepicker', 'date-picker', 'calendar', 'datetimepicker',
+    'datetime-picker', 'daterangepicker', 'date-range-picker',
+    'flatpickr', 'pikaday', 'react-datepicker', 'mat-datepicker',
+    'ant-calendar', 'ant-picker',
+]
+
+# Input types that represent date/time pickers
+DATE_INPUT_TYPES = {'date', 'datetime-local', 'time', 'month', 'week'}
+
+# Selectors for calendar overlay containers
+CALENDAR_OVERLAY_SELECTORS = [
+    '[class*="datepicker"]',
+    '[class*="date-picker"]',
+    '[class*="calendar"]',
+    '[class*="flatpickr-calendar"]',
+    '[class*="react-datepicker"]',
+    '.mat-datepicker-popup',
+    '[role="dialog"]:has([role="grid"])',
+]
+
 # Selectors for modal/dialog containers
 MODAL_CONTAINER_SELECTORS = [
     'dialog[open]',
@@ -152,6 +174,120 @@ class NavigationHandler:
 
         return False
 
+    async def _is_date_picker_element(self, element) -> bool:
+        """Check if element is a date picker trigger that should be skipped."""
+        # Check input type
+        try:
+            input_type = (await element.get_attribute('type') or "").lower()
+            if input_type in DATE_INPUT_TYPES:
+                return True
+        except Exception:
+            pass
+
+        # Check class, id, aria-label, name against date picker patterns
+        attrs = []
+        try:
+            attrs.append((await element.get_attribute('class') or "").lower())
+        except Exception:
+            pass
+        try:
+            attrs.append((await element.get_attribute('id') or "").lower())
+        except Exception:
+            pass
+        try:
+            attrs.append((await element.get_attribute('aria-label') or "").lower())
+        except Exception:
+            pass
+        try:
+            attrs.append((await element.get_attribute('name') or "").lower())
+        except Exception:
+            pass
+
+        for attr_val in attrs:
+            for pattern in DATE_PICKER_PATTERNS:
+                if pattern in attr_val:
+                    return True
+
+        # Check if element is inside a date picker component or adjacent to a date input
+        try:
+            is_date_related = await element.evaluate('''(el) => {
+                const pickerAncestor = el.closest(
+                    '[class*="datepicker"], [class*="date-picker"], [class*="calendar"], '
+                  + '[class*="flatpickr"], [class*="mat-datepicker"], [class*="ant-picker"], '
+                  + '[class*="react-datepicker"]'
+                );
+                if (pickerAncestor) return true;
+                const parent = el.parentElement;
+                if (parent) {
+                    const dateInput = parent.querySelector(
+                        'input[type="date"], input[type="datetime-local"], '
+                      + 'input[type="time"], input[type="month"], input[type="week"]'
+                    );
+                    if (dateInput) return true;
+                }
+                return false;
+            }''')
+            if is_date_related:
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _is_calendar_overlay(self, container) -> bool:
+        """Check if a container element looks like a calendar overlay."""
+        try:
+            return await container.evaluate('''(el) => {
+                const cls = (el.className || '').toLowerCase();
+                const calendarPatterns = ['calendar', 'datepicker', 'date-picker', 'flatpickr'];
+                if (calendarPatterns.some(p => cls.includes(p))) return true;
+                const grid = el.querySelector('[role="grid"]');
+                if (grid) {
+                    const cells = grid.querySelectorAll('td, [role="gridcell"]');
+                    let dayCount = 0;
+                    cells.forEach(c => {
+                        const num = parseInt(c.textContent.trim());
+                        if (num >= 1 && num <= 31) dayCount++;
+                    });
+                    if (dayCount >= 7) return true;
+                }
+                return false;
+            }''')
+        except Exception:
+            return False
+
+    async def _dismiss_calendar_overlay(self, page: Page) -> bool:
+        """Detect and dismiss any visible calendar/datepicker overlay. Returns True if one was dismissed."""
+        for selector in CALENDAR_OVERLAY_SELECTORS:
+            try:
+                elements = await page.query_selector_all(selector)
+                for el in elements:
+                    try:
+                        if not await el.is_visible():
+                            continue
+                        if not await self._is_calendar_overlay(el):
+                            continue
+
+                        logger.debug("Calendar overlay detected, dismissing...")
+                        await page.keyboard.press('Escape')
+                        await page.wait_for_timeout(300)
+
+                        # Verify it was dismissed
+                        try:
+                            if await el.is_visible():
+                                # Fallback: click outside the overlay
+                                await page.mouse.click(0, 0)
+                                await page.wait_for_timeout(300)
+                        except Exception:
+                            pass  # Element may have been removed from DOM
+
+                        return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return False
+
     async def _get_dom_hash(self, page: Page) -> str:
         """Generate hash of meaningful DOM structure to detect duplicate pages."""
         try:
@@ -258,6 +394,9 @@ class NavigationHandler:
                                 }''')
 
                                 if is_enabled and not await self._is_destructive_action(locator):
+                                    if await self._is_date_picker_element(elem):
+                                        logger.debug("Skipping date picker element")
+                                        continue
                                     all_elements.append(locator)
                                     if len(all_elements) >= self.config.max_clicks_per_page:
                                         return all_elements
@@ -715,6 +854,12 @@ class NavigationHandler:
     async def _handle_overlay(self, page: Page):
         """Attempt to interact with and then dismiss any blocking modals."""
         logger.info("Handling overlay: attempting affirmative actions first...")
+
+        # Check if this is a calendar overlay — dismiss immediately without interacting
+        if await self._dismiss_calendar_overlay(page):
+            logger.info("Dismissed calendar overlay")
+            return
+
         try:
             # 1. Identify active modal container
             modal_container = None

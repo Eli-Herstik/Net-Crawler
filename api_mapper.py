@@ -320,6 +320,11 @@ class APIMapper:
 
     async def _interact_with_new_elements(self, page: Page, depth: int):
         """After a non-navigating click, check for newly appeared elements (menus, dropdowns) and interact with them."""
+        # Dismiss any calendar overlay that may have appeared
+        if await self.navigator._dismiss_calendar_overlay(page):
+            logger.debug("Dismissed calendar overlay after click")
+            return
+
         base_url = page.url
         popup_selectors = POPUP_CONTAINER_SELECTORS
 
