@@ -174,7 +174,7 @@ class APIMapper:
             if not is_external_url(url_key):
                 return
 
-            logger.debug("Intercepted request %s (type: %s)", url_key, request.resource_type)
+            # logger.debug("Intercepted request %s (type: %s)", url_key, request.resource_type)
 
             # Store request data for all requests 
             if url_key not in pending_requests:
@@ -287,14 +287,21 @@ class APIMapper:
                     should_follow = self.navigator._should_follow_url(current_url)
                     
                     if should_follow and current_url not in self.navigator.visited_urls:
-                        # New page, explore it recursively
-                        self.navigator.visited_urls.add(current_url)
-                        # Save parent page's click counter before exploring deeper page
-                        saved_clicks = self.navigator.clicks_on_current_page
-                        self.navigator.clicks_on_current_page = 0
-                        await self._explore_page(page, depth + 1)
-                        # Restore parent page's click counter
-                        self.navigator.clicks_on_current_page = saved_clicks
+                        # Check DOM hash to skip semantically duplicate pages
+                        dom_hash = await self.navigator._get_dom_hash(page)
+                        if dom_hash and dom_hash in self.navigator.visited_dom_hashes:
+                            logger.debug("Skipping duplicate page (DOM hash match): %s", current_url)
+                        else:
+                            if dom_hash:
+                                self.navigator.visited_dom_hashes.add(dom_hash)
+                            # New page, explore it recursively
+                            self.navigator.visited_urls.add(current_url)
+                            # Save parent page's click counter before exploring deeper page
+                            saved_clicks = self.navigator.clicks_on_current_page
+                            self.navigator.clicks_on_current_page = 0
+                            await self._explore_page(page, depth + 1)
+                            # Restore parent page's click counter
+                            self.navigator.clicks_on_current_page = saved_clicks
                     elif not should_follow:
                         logger.debug("Skipping external/excluded URL: %s", current_url)
                     
