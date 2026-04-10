@@ -378,11 +378,18 @@ class APIMapper:
                             if current_url != base_url:
                                 should_follow = self.navigator._should_follow_url(current_url)
                                 if should_follow and current_url not in self.navigator.visited_urls:
-                                    self.navigator.visited_urls.add(current_url)
-                                    saved_clicks = self.navigator.clicks_on_current_page
-                                    self.navigator.clicks_on_current_page = 0
-                                    await self._explore_page(page, depth + 1)
-                                    self.navigator.clicks_on_current_page = saved_clicks
+                                    # Check DOM hash to skip semantically duplicate pages
+                                    dom_hash = await self.navigator._get_dom_hash(page)
+                                    if dom_hash and dom_hash in self.navigator.visited_dom_hashes:
+                                        logger.debug("Skipping duplicate page (DOM hash match): %s", current_url)
+                                    else:
+                                        if dom_hash:
+                                            self.navigator.visited_dom_hashes.add(dom_hash)
+                                        self.navigator.visited_urls.add(current_url)
+                                        saved_clicks = self.navigator.clicks_on_current_page
+                                        self.navigator.clicks_on_current_page = 0
+                                        await self._explore_page(page, depth + 1)
+                                        self.navigator.clicks_on_current_page = saved_clicks
                                 try:
                                     await page.go_back(wait_until='load', timeout=self.config.wait_timeout)
                                     await page.wait_for_timeout(1000)
