@@ -1,106 +1,63 @@
-from typing import List, Set, Optional, Dict, Any
+"""Handle smart navigation through website.
+
+This module composes ElementClassifier, FormFiller, OverlayHandler, and DOMHasher
+to provide a unified navigation interface. Delegation methods preserve backward
+compatibility with existing callers and tests.
+"""
+from typing import List, Set
 from playwright.async_api import Page, Locator
 from urllib.parse import urlparse
 from config_loader import Config
-import hashlib
+from css_selectors import (
+    CLICKABLE_SELECTORS,
+    MODAL_CONTAINER_SELECTORS,
+    INTERACTIVE_SELECTORS,
+    POPUP_CONTAINER_SELECTORS,
+)
+from element_classifier import ElementClassifier
+from dom_hasher import DOMHasher
+from form_filler import FormFiller
+from overlay_handler import OverlayHandler
 import logging
 import re
 
 logger = logging.getLogger(__name__)
 
-# Selectors for interactive elements inside overlays/popups/modals
-INTERACTIVE_SELECTORS = (
-    'button, a[href], [role="button"], [role="menuitem"], '
-    '[role="option"], input[type="submit"], input[type="button"]'
-)
-
-# Selectors for clickable elements on a page (superset with :not([disabled]) filters)
-CLICKABLE_SELECTORS = [
-    'a[href]',
-    'button:not([disabled])',
-    'input[type="submit"]:not([disabled])',
-    '[onclick]',
-    '[role="button"]',
-    '[role="link"]',
-    '[role="menuitem"]',
-    'input[type="button"]:not([disabled])',
-]
-
-# Date picker patterns to skip (substring match against class, id, aria-label, name)
-DATE_PICKER_PATTERNS = [
-    'datepicker', 'date-picker', 'calendar', 'datetimepicker',
-    'datetime-picker', 'daterangepicker', 'date-range-picker',
-    'flatpickr', 'pikaday', 'react-datepicker', 'mat-datepicker',
-    'ant-calendar', 'ant-picker',
-]
-
-# Input types that represent date/time pickers
-DATE_INPUT_TYPES = {'date', 'datetime-local', 'time', 'month', 'week'}
-
-# Selectors for calendar overlay containers
-CALENDAR_OVERLAY_SELECTORS = [
-    '[class*="datepicker"]',
-    '[class*="date-picker"]',
-    '[class*="calendar"]',
-    '[class*="flatpickr-calendar"]',
-    '[class*="react-datepicker"]',
-    '.mat-datepicker-popup',
-    '[role="dialog"]:has([role="grid"])',
-]
-
-# Selectors for modal/dialog containers
-MODAL_CONTAINER_SELECTORS = [
-    'dialog[open]',
-    '[role="dialog"]',
-    '[role="alertdialog"]',
-    '.modal-content',
-    '.modal-dialog',
-    '.modal',
-    '[class*="modal"]',
-    '.overlay',
-    '[class*="overlay"]',
-    '.cdk-overlay-container',
-    '.cdk-overlay-pane',
-    '[class*="cdk-overlay"]',
-    '.mat-mdc-menu-panel',
-    '[class*="mat-menu"]',
-]
-
-# Selectors for popup/menu containers (menus, dropdowns, listboxes)
-POPUP_CONTAINER_SELECTORS = [
-    '.cdk-overlay-pane',
-    '[class*="cdk-overlay"]',
-    '.mat-mdc-menu-panel',
-    '[class*="mat-menu"]',
-    '[role="menu"]',
-    '[role="listbox"]',
-    '.dropdown-menu',
-    '[class*="dropdown"]',
-]
-
-# Selectors for dismissing overlays/modals
-DISMISS_SELECTORS = [
-    'button[aria-label="Close"]',
-    'button[aria-label="close"]',
-    '.close-button',
-    '.modal-close',
-    'button:has-text("Close")',
-    'button:has-text("Cancel")',
-    'button:has-text("No thanks")',
-    'button:has-text("Dismiss")',
-]
-
 
 class NavigationHandler:
     """Handle smart navigation through website."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, dom_hasher: DOMHasher = None):
         self.config = config
         self.visited_urls: Set[str] = set()
-        self.visited_dom_hashes: Set[str] = set()
         self.current_depth = 0
         self.clicks_on_current_page = 0
-        self.visited_overlay_hashes: Set[str] = set()
+
+        # Composed modules
+        self.classifier = ElementClassifier(config)
+        self.dom_hasher = dom_hasher or DOMHasher()
+        self.form_filler = FormFiller(config)
+        self.overlay_handler = OverlayHandler(self.classifier, self.form_filler)
+
+    # --- Backward-compat proxies for dom_hasher state ---
+
+    @property
+    def visited_dom_hashes(self) -> Set[str]:
+        return self.dom_hasher.visited_dom_hashes
+
+    @visited_dom_hashes.setter
+    def visited_dom_hashes(self, value: Set[str]):
+        self.dom_hasher.visited_dom_hashes = value
+
+    @property
+    def visited_overlay_hashes(self) -> Set[str]:
+        return self.dom_hasher.visited_overlay_hashes
+
+    @visited_overlay_hashes.setter
+    def visited_overlay_hashes(self, value: Set[str]):
+        self.dom_hasher.visited_overlay_hashes = value
+
+    # --- URL filtering ---
 
     def _should_follow_url(self, url: str) -> bool:
         """Determine if URL should be followed."""
@@ -112,265 +69,24 @@ class NavigationHandler:
             start_parsed = urlparse(self.config.start_url)
             is_same_domain = (parsed_url.scheme == start_parsed.scheme and
                             parsed_url.netloc == start_parsed.netloc)
-            
             return is_same_domain
         except Exception:
             return False
 
-    DESTRUCTIVE_PATTERNS = [
-        'logout', 'delete', 'remove', 'destroy', 'clear',
-        'close', 'cancel', 'dismiss', 'no thanks',
-    ]
-
-    # Patterns that should only match the visible text content exactly (stripped),
-    # not as substrings in URLs, classes, or other attributes.
-    DESTRUCTIVE_TEXT_EXACT = ['x', '\u00d7']  # "x" and "×" (close buttons)
-
-    async def _is_destructive_action(self, element, text: str = "") -> bool:
-        """Check if element action is destructive or dismissive (logout, delete, close, etc.)."""
-        if not text:
-            try:
-                text = await element.text_content() or ""
-            except Exception:
-                text = ""
-
-        text_lower = text.strip().lower()
-
-        # Gather all relevant attributes
-        href = ""
-        classes = ""
-        element_id = ""
-        aria_label = ""
-        try:
-            href = (await element.get_attribute('href') or "").lower()
-        except Exception:
-            pass
-        try:
-            classes = (await element.get_attribute('class') or "").lower()
-            element_id = (await element.get_attribute('id') or "").lower()
-        except Exception:
-            pass
-        try:
-            aria_label = (await element.get_attribute('aria-label') or "").lower()
-        except Exception:
-            pass
-
-        searchable = [text_lower, href, classes, element_id, aria_label]
-
-        # Check user-configured exclude patterns
-        for pattern in self.config.exclude_patterns:
-            pattern_lower = pattern.lower()
-            if any(pattern_lower in s for s in searchable):
-                return True
-
-        # Check built-in destructive/dismissive patterns (substring match)
-        for pattern in self.DESTRUCTIVE_PATTERNS:
-            if any(pattern in s for s in searchable):
-                return True
-
-        # Check exact-text-only patterns (e.g. "x" close buttons)
-        if text_lower in self.DESTRUCTIVE_TEXT_EXACT:
-            return True
-
-        return False
-
-    async def _is_date_picker_element(self, element) -> bool:
-        """Check if element is a date picker trigger that should be skipped."""
-        # Check input type
-        try:
-            input_type = (await element.get_attribute('type') or "").lower()
-            if input_type in DATE_INPUT_TYPES:
-                return True
-        except Exception:
-            pass
-
-        # Check class, id, aria-label, name against date picker patterns
-        attrs = []
-        try:
-            attrs.append((await element.get_attribute('class') or "").lower())
-        except Exception:
-            pass
-        try:
-            attrs.append((await element.get_attribute('id') or "").lower())
-        except Exception:
-            pass
-        try:
-            attrs.append((await element.get_attribute('aria-label') or "").lower())
-        except Exception:
-            pass
-        try:
-            attrs.append((await element.get_attribute('name') or "").lower())
-        except Exception:
-            pass
-
-        for attr_val in attrs:
-            for pattern in DATE_PICKER_PATTERNS:
-                if pattern in attr_val:
-                    return True
-
-        # Check if element is inside a date picker component or adjacent to a date input
-        try:
-            is_date_related = await element.evaluate('''(el) => {
-                const pickerAncestor = el.closest(
-                    '[class*="datepicker"], [class*="date-picker"], [class*="calendar"], '
-                  + '[class*="flatpickr"], [class*="mat-datepicker"], [class*="ant-picker"], '
-                  + '[class*="react-datepicker"]'
-                );
-                if (pickerAncestor) return true;
-                const parent = el.parentElement;
-                if (parent) {
-                    const dateInput = parent.querySelector(
-                        'input[type="date"], input[type="datetime-local"], '
-                      + 'input[type="time"], input[type="month"], input[type="week"]'
-                    );
-                    if (dateInput) return true;
-                }
-                return false;
-            }''')
-            if is_date_related:
-                return True
-        except Exception:
-            pass
-
-        return False
-
-    async def _is_calendar_overlay(self, container) -> bool:
-        """Check if a container element looks like a calendar overlay."""
-        try:
-            return await container.evaluate('''(el) => {
-                const cls = (el.className || '').toLowerCase();
-                const calendarPatterns = ['calendar', 'datepicker', 'date-picker', 'flatpickr'];
-                if (calendarPatterns.some(p => cls.includes(p))) return true;
-                const grid = el.querySelector('[role="grid"]');
-                if (grid) {
-                    const cells = grid.querySelectorAll('td, [role="gridcell"]');
-                    let dayCount = 0;
-                    cells.forEach(c => {
-                        const num = parseInt(c.textContent.trim());
-                        if (num >= 1 && num <= 31) dayCount++;
-                    });
-                    if (dayCount >= 7) return true;
-                }
-                return false;
-            }''')
-        except Exception:
-            return False
-
-    async def _dismiss_calendar_overlay(self, page: Page) -> bool:
-        """Detect and dismiss any visible calendar/datepicker overlay. Returns True if one was dismissed."""
-        for selector in CALENDAR_OVERLAY_SELECTORS:
-            try:
-                elements = await page.query_selector_all(selector)
-                for el in elements:
-                    try:
-                        if not await el.is_visible():
-                            continue
-                        if not await self._is_calendar_overlay(el):
-                            continue
-
-                        logger.debug("Calendar overlay detected, dismissing...")
-                        await page.keyboard.press('Escape')
-                        await page.wait_for_timeout(300)
-
-                        # Verify it was dismissed
-                        try:
-                            if await el.is_visible():
-                                # Fallback: click outside the overlay
-                                await page.mouse.click(0, 0)
-                                await page.wait_for_timeout(300)
-                        except Exception:
-                            pass  # Element may have been removed from DOM
-
-                        return True
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-        return False
-
-    async def _get_dom_hash(self, page: Page) -> str:
-        """Generate hash of meaningful DOM structure to detect duplicate pages."""
-        try:
-            fingerprint = await page.evaluate("""() => {
-                const SKIP = new Set(['SCRIPT','STYLE','SVG','NOSCRIPT']);
-                const URL_ATTRS = new Set(['href','src','action']);
-                const KEEP_ATTRS = ['href','src','action','type','name','role'];
-
-                function normUrl(u) {
-                    if (!u) return '';
-                    try { return new URL(u, location.origin).pathname; }
-                    catch(e) { return u; }
-                }
-
-                function walk(node) {
-                    if (!node) return '';
-                    let out = '';
-                    for (let c = node.firstChild; c; c = c.nextSibling) {
-                        if (c.nodeType === 8) continue;
-                        if (c.nodeType === 3) {
-                            let t = c.textContent.trim().replace(/\\s+/g, ' ');
-                            if (t) out += t;
-                            continue;
-                        }
-                        if (c.nodeType !== 1) continue;
-                        let tag = c.tagName;
-                        if (SKIP.has(tag)) continue;
-                        if (tag === 'INPUT' && c.type === 'hidden') continue;
-                        let lt = tag.toLowerCase();
-                        out += '<' + lt;
-                        for (let a of KEEP_ATTRS) {
-                            let v = c.getAttribute(a);
-                            if (v != null) {
-                                if (URL_ATTRS.has(a)) v = normUrl(v);
-                                out += ' ' + a + '="' + v + '"';
-                            }
-                        }
-                        out += '>';
-                        out += walk(c);
-                        out += '</' + lt + '>';
-                    }
-                    return out;
-                }
-
-                return walk(document.body);
-            }""")
-            if not fingerprint:
-                return ""
-            return hashlib.md5(fingerprint.encode()).hexdigest()
-        except Exception:
-            return ""
-
-    async def _get_overlay_hash(self, container) -> str:
-        """Fingerprint an overlay by its interactive elements' tags and text."""
-        interactive = await container.query_selector_all(INTERACTIVE_SELECTORS)
-        parts = []
-        for el in interactive:
-            try:
-                tag = await el.evaluate('el => el.tagName.toLowerCase()')
-                text = (await el.text_content() or '').strip().lower()
-                parts.append(f"{tag}:{text}")
-            except Exception:
-                continue
-        parts.sort()
-        fingerprint = '|'.join(parts)
-        return hashlib.md5(fingerprint.encode()).hexdigest()
+    # --- Element interaction ---
 
     async def get_clickable_elements(self, page: Page) -> List[Locator]:
         """Get all clickable elements on current page."""
-        clickable_selectors = CLICKABLE_SELECTORS
-
         all_elements = []
         seen_elements = set()
 
-        for selector in clickable_selectors:
+        for selector in CLICKABLE_SELECTORS:
             try:
                 page_elements = await page.query_selector_all(selector)
                 for idx, elem in enumerate(page_elements):
                     try:
-                        # Create locator for this specific element
                         locator = page.locator(selector).nth(idx)
 
-                        # Get element identifier for deduplication
                         try:
                             elem_html = await elem.evaluate('el => el.outerHTML')
                             if elem_html in seen_elements:
@@ -379,22 +95,18 @@ class NavigationHandler:
                         except Exception:
                             pass
 
-                        # Check if visible and not destructive
                         try:
                             if await locator.is_visible():
-                                # Additional check: ensure button is actually enabled
-                                # Some frameworks use aria-disabled instead of disabled attribute
                                 is_enabled = await elem.evaluate('''el => {
                                     if (el.disabled) return false;
                                     if (el.getAttribute('aria-disabled') === 'true') return false;
-                                    // Check computed style for pointer-events
                                     const style = window.getComputedStyle(el);
                                     if (style.pointerEvents === 'none') return false;
                                     return true;
                                 }''')
 
-                                if is_enabled and not await self._is_destructive_action(locator):
-                                    if await self._is_date_picker_element(elem):
+                                if is_enabled and not await self.classifier.is_destructive_action(locator):
+                                    if await self.classifier.is_date_picker_element(elem):
                                         logger.debug("Skipping date picker element")
                                         continue
                                     all_elements.append(locator)
@@ -427,13 +139,6 @@ class NavigationHandler:
 
             await page.goto(url, wait_until='networkidle', timeout=self.config.wait_timeout)
             await page.wait_for_timeout(self.config.network_idle_timeout)
-
-            # Check DOM hash to avoid infinite loops
-            dom_hash = await self._get_dom_hash(page)
-            if dom_hash and dom_hash in self.visited_dom_hashes:
-                return False
-
-            self.visited_dom_hashes.add(dom_hash)
             return True
 
         except Exception as e:
@@ -446,40 +151,30 @@ class NavigationHandler:
             return False
 
         try:
-            # Skip elements that aren't visible
             if not await element.is_visible():
                 logger.debug("Element is not visible, skipping click.")
                 return False
 
-            # Scroll element into view
-            scroll_failed = False
             try:
                 await element.scroll_into_view_if_needed(timeout=5000)
                 await page.wait_for_timeout(500)
             except Exception as scroll_err:
-                scroll_failed = True
                 logger.debug("Scroll failed: %s. Attempting click without scroll.", scroll_err)
 
-            # Get URL before click
             url_before = page.url
 
             try:
-                # Click element
                 await element.click(timeout=5000)
             except Exception as click_err:
                 error_msg = str(click_err)
                 if 'intercepts pointer events' in error_msg:
-                    # Extract the intercepting element's tag from Playwright's error message
-                    # Format: "<html lang="en" ...>…</html> intercepts pointer events"
                     interceptor_match = re.search(r'<(\w+)\b', error_msg.split('intercepts pointer events')[0].rsplit('\n', 1)[-1])
                     interceptor_tag = interceptor_match.group(1).lower() if interceptor_match else ''
 
                     if interceptor_tag in ('html', 'body'):
-                        # Structural elements like <html> and <body> are never real modals
                         logger.info("Click intercepted by <%s>, not a modal. Force-clicking.", interceptor_tag)
                         await element.click(timeout=3000, force=True)
                     else:
-                        # Check if a real modal actually exists before running overlay handling
                         has_modal = False
                         for selector in MODAL_CONTAINER_SELECTORS:
                             try:
@@ -495,7 +190,7 @@ class NavigationHandler:
 
                         if has_modal:
                             logger.warning("Element click intercepted by a modal. Attempting to interact with overlay...")
-                            await self._handle_overlay(page)
+                            await self.overlay_handler.handle_overlay(page)
                             try:
                                 await element.click(timeout=3000)
                             except Exception:
@@ -504,24 +199,19 @@ class NavigationHandler:
                             logger.info("Click intercepted but no modal detected. Force-clicking.")
                             await element.click(timeout=3000, force=True)
                 else:
-                    # For non-interception errors, try force-click as last resort
                     try:
                         await element.click(timeout=3000, force=True)
                     except Exception:
                         raise click_err
-            
+
             self.clicks_on_current_page += 1
 
-            # Wait for navigation or network activity
             try:
                 await page.wait_for_load_state('networkidle', timeout=5000)
             except Exception:
                 await page.wait_for_timeout(1000)
 
-            # Check if URL changed
             url_after = page.url
-
-            # If SPA, wait a bit more for async updates
             if url_before == url_after:
                 await page.wait_for_timeout(300)
 
@@ -531,442 +221,41 @@ class NavigationHandler:
             logger.error("Click error: %s", e)
             return False
 
-    async def _get_element_label(self, input_el) -> str:
-        """Get a human-readable label for a form element."""
-        try:
-            text = (await input_el.evaluate('el => el.textContent') or "").strip()
-            if not text:
-                text = (await input_el.get_attribute('aria-label') or "").strip()
-            if not text:
-                text = (await input_el.get_attribute('placeholder') or "").strip()
-            if not text:
-                text = (await input_el.get_attribute('name') or "").strip()
-            if not text:
-                text = (await input_el.get_attribute('id') or "").strip()
-            if text:
-                return f" ('{text[:30]}')"
-        except Exception:
-            pass
-        return ""
-
-    async def _get_minimum_length(self, input_el) -> int:
-        """Get minimum length requirement for input field."""
-        try:
-            # Check minlength attribute
-            minlength = await input_el.get_attribute('minlength')
-            if minlength and minlength.isdigit():
-                return int(minlength)
-
-            # Check pattern attribute for length hints
-            pattern = await input_el.get_attribute('pattern')
-            if pattern:
-                # Simple regex patterns like .{8,} or .{8,20}
-                import re
-                match = re.search(r'\.{\s*(\d+)\s*,', pattern)
-                if match:
-                    return int(match.group(1))
-
-            # Check required attribute and common validation patterns
-            required = await input_el.get_attribute('required')
-            if required is not None:
-                input_type = await input_el.get_attribute('type') or 'text'
-                # Common defaults for required fields
-                if input_type == 'password':
-                    return 8  # Common password minimum
-
-        except Exception:
-            pass
-
-        return 0
-
-    async def _generate_value_with_length(self, base_value: str, min_length: int) -> str:
-        """Generate a value that meets minimum length requirement."""
-        if len(base_value) >= min_length:
-            return base_value
-
-        # Pad the value to meet minimum length
-        if '@' in base_value:  # Email
-            # Add characters before @
-            local_part, domain = base_value.split('@', 1)
-            padding_needed = min_length - len(base_value)
-            local_part += 'x' * padding_needed
-            return f"{local_part}@{domain}"
-        elif base_value.startswith('http'):  # URL
-            padding_needed = min_length - len(base_value)
-            return base_value + 'x' * padding_needed
-        else:  # Regular text or password
-            padding_needed = min_length - len(base_value)
-            return base_value + 'x' * padding_needed
-
-    async def fill_page_forms(self, page: Page, root=None):
-        """Fill forms on the page (or within a specific container) to enable submit buttons."""
-        if not self.config.form_filling or not self.config.form_filling.enabled:
-            return
-
-        max_passes = 3
-        for pass_idx in range(max_passes):
-            fields_filled = await self._fill_page_forms_pass(page, pass_idx, root=root)
-            if fields_filled == 0:
-                break
-            # Wait a little before the next pass to allow UI to update
-            await page.wait_for_timeout(500)
-
-    async def _fill_page_forms_pass(self, page: Page, pass_idx: int = 0, root=None) -> int:
-        fields_filled = 0
-        query_root = root or page
-        try:
-            # Find all visible inputs, textareas, and selects that are not disabled or readonly
-            # Include readonly inputs as they might be custom click-triggered dropdowns
-            inputs = await query_root.query_selector_all('input:not([type="hidden"]):not([disabled]), textarea:not([disabled]):not([readonly]), select:not([disabled])')
-
-            for input_el in inputs:
-                try:
-                    if not await input_el.is_visible():
-                        continue
-
-                    tag_name = await input_el.evaluate('el => el.tagName.toLowerCase()')
-                    
-                    if tag_name == 'select':
-                        current_val = await input_el.evaluate('el => el.value')
-                        if pass_idx > 0 and current_val and current_val.strip() != '':
-                            continue
-                        options_data = await input_el.evaluate('''el => {
-                            return Array.from(el.options).map((o, idx) => ({
-                                index: idx,
-                                value: o.value,
-                                disabled: o.disabled
-                            }));
-                        }''')
-                        
-                        if not options_data:
-                            continue
-                            
-                        valid_options = [o for o in options_data if not o.get('disabled') and o.get('value', '').strip() != '']
-                        
-                        if current_val and current_val.strip() != '' and any(o.get('value') == current_val for o in valid_options):
-                            continue
-                            
-                        el_label = await self._get_element_label(input_el)
-                        if valid_options:
-                            selected_val = valid_options[0]['value']
-                            await input_el.select_option(value=selected_val)
-                            logger.debug("Selected select option: %s%s", selected_val, el_label)
-                        elif len(options_data) > 1:
-                            await input_el.select_option(index=1)
-                            logger.debug("Selected select option by index 1%s", el_label)
-                        else:
-                            await input_el.select_option(index=0)
-                            logger.debug("Selected select option by index 0%s", el_label)
-                            
-                        await input_el.dispatch_event('change')
-                        await page.wait_for_timeout(self.config.form_filling.fill_delay)
-                        fields_filled += 1
-                        continue
-
-                    # Check if already has value (use DOM property on subsequent passes
-                    # since get_attribute only reads the initial HTML attribute)
-                    if pass_idx > 0:
-                        current_value = await input_el.evaluate('el => el.value')
-                    else:
-                        current_value = await input_el.get_attribute('value')
-                    if current_value:
-                        continue
-
-                    # Get minimum length requirement
-                    min_length = await self._get_minimum_length(input_el)
-
-                    # Determine value to fill
-                    fill_value = "Test Value"
-
-                    # check specific defaults from config first
-                    if self.config.form_filling.defaults:
-                        # naive check using selector matching - in real world might need more robust matching
-                        for selector, value in self.config.form_filling.defaults.items():
-                            is_match = await input_el.evaluate(f'(el) => el.matches("{selector}")')
-                            if is_match:
-                                fill_value = value
-                                break
-
-                    # If no specific default, guess based on type/name
-                    if fill_value == "Test Value":
-                        input_type = await input_el.get_attribute('type') or 'text'
-                        input_name = await input_el.get_attribute('name') or ''
-                        input_id = await input_el.get_attribute('id') or ''
-
-                        lower_name = (input_name + input_id).lower()
-
-                        if input_type == 'email' or 'email' in lower_name:
-                            fill_value = "test@example.com"
-                        elif input_type == 'password' or 'password' in lower_name:
-                            fill_value = "Password123!"
-                        elif input_type == 'tel' or 'phone' in lower_name:
-                            fill_value = "555-012345"
-                        elif input_type == 'number':
-                            fill_value = "1"
-                        elif input_type == 'url':
-                            fill_value = "https://example.com"
-                        elif input_type == 'date':
-                            fill_value = "2024-01-01"
-
-                    # Ensure value meets minimum length requirement
-                    if min_length > 0:
-                        fill_value = await self._generate_value_with_length(fill_value, min_length)
-                        logger.debug("Adjusted value to meet minimum length %d", min_length)
-
-                    # Clear the field first
-                    try:
-                        await input_el.clear(timeout=2000)
-                    except Exception:
-                        pass # Native readonly fields might throw here
-
-                    # Check for click-triggered dropdowns
-                    dropdown_handled = False
-                    try:
-                        await input_el.click(timeout=2000)
-                        await page.wait_for_timeout(500)
-                        
-                        option_selectors = [
-                            '[role="option"]',
-                            '.dropdown-item',
-                            '.select2-results__option',
-                            '.ant-select-item-option',
-                            '.el-select-dropdown__item',
-                            '.mat-option',
-                            '.v-list-item'
-                        ]
-                        
-                        for opt_selector in option_selectors:
-                            try:
-                                options = await page.query_selector_all(opt_selector)
-                                for opt in options:
-                                    if await opt.is_visible():
-                                        # Scroll into view and click
-                                        try:
-                                            await opt.scroll_into_view_if_needed(timeout=2000)
-                                        except Exception:
-                                            pass
-                                        await opt.click(timeout=2000)
-                                        logger.debug("Selected click-triggered dropdown option: %s", opt_selector)
-                                        dropdown_handled = True
-                                        await page.wait_for_timeout(300)
-                                        break
-                                if dropdown_handled:
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        logger.warning("Error checking click dropdown: %s", e)
-
-                    if not dropdown_handled:
-                        # Fill the value character by character to trigger validation
-                        try:
-                            await input_el.type(fill_value, delay=50)
-                        except Exception:
-                            # Might fail if readonly, but we tried our best
-                            pass
-                            
-                        await page.wait_for_timeout(300)
-
-                        # Also check if typing triggered an autocomplete dropdown
-                        try:
-                            for opt_selector in option_selectors:
-                                options = await page.query_selector_all(opt_selector)
-                                for opt in options:
-                                    if await opt.is_visible():
-                                        try:
-                                            await opt.scroll_into_view_if_needed(timeout=2000)
-                                        except Exception:
-                                            pass
-                                        await opt.click(timeout=2000)
-                                        logger.debug("Selected typing-triggered dropdown option: %s", opt_selector)
-                                        dropdown_handled = True
-                                        await page.wait_for_timeout(300)
-                                        break
-                                if dropdown_handled:
-                                    break
-                        except Exception:
-                            pass
-
-                        # If no dropdown option appeared after typing, it might be an autocomplete 
-                        # where only matching values show options. Clear input to see if it shows all options.
-                        if not dropdown_handled:
-                            try:
-                                # First, clear the input
-                                await input_el.fill("", timeout=1000)
-                                await page.wait_for_timeout(300)
-                                
-                                # Check again if any option appeared
-                                for opt_selector in option_selectors:
-                                    options = await page.query_selector_all(opt_selector)
-                                    for opt in options:
-                                        if await opt.is_visible():
-                                            try:
-                                                await opt.scroll_into_view_if_needed(timeout=2000)
-                                            except Exception:
-                                                pass
-                                            await opt.click(timeout=2000)
-                                            logger.debug("Selected cleared-typing dropdown option: %s", opt_selector)
-                                            dropdown_handled = True
-                                            await page.wait_for_timeout(300)
-                                            break
-                                    if dropdown_handled:
-                                        break
-                                        
-                                # If STILL no dropdown, we re-type the original value to proceed normally
-                                if not dropdown_handled:
-                                    await input_el.type(fill_value, delay=50)
-                                    await page.wait_for_timeout(300)
-                            except Exception:
-                                pass
-
-                    # Dispatch events to ensure app logic detects change
-                    try:
-                        await input_el.dispatch_event('input')
-                        await input_el.dispatch_event('change')
-                        await input_el.dispatch_event('blur')
-                    except Exception:
-                        pass
-
-                    # Wait for validation to run
-                    await page.wait_for_timeout(300)
-
-                    el_label = await self._get_element_label(input_el)
-                    if dropdown_handled:
-                        logger.debug("Filled form field via dropdown selection%s", el_label)
-                    else:
-                        logger.debug("Filled form field with: %s%s", fill_value, el_label)
-                        
-                    fields_filled += 1
-                    await page.wait_for_timeout(self.config.form_filling.fill_delay)
-
-                except Exception as e:
-                    # Ignore errors for individual fields
-                    continue
-
-            # After filling all fields, wait a bit more for buttons to enable
-            await page.wait_for_timeout(500)
-
-        except Exception as e:
-            logger.error("Error filling forms: %s", e)
-
-        return fields_filled
-
-    async def _handle_overlay(self, page: Page):
-        """Attempt to interact with and then dismiss any blocking modals."""
-        logger.info("Handling overlay: attempting affirmative actions first...")
-
-        # Check if this is a calendar overlay — dismiss immediately without interacting
-        if await self._dismiss_calendar_overlay(page):
-            logger.info("Dismissed calendar overlay")
-            return
-
-        try:
-            # 1. Identify active modal container
-            modal_container = None
-            container_selectors = MODAL_CONTAINER_SELECTORS
-            
-            for selector in container_selectors:
-                try:
-                    elements = await page.query_selector_all(selector)
-                    for el in elements:
-                        if await el.is_visible():
-                            modal_container = el
-                            break
-                    if modal_container:
-                        break
-                except Exception:
-                    continue
-            
-            action_taken = False
-            if modal_container:
-                logger.info("Modal container identified. Filling forms and searching for interactive elements...")
-                # Fill forms scoped to the modal container
-                await self.fill_page_forms(page, root=modal_container)
-                try:
-                    # Find buttons and links inside the modal
-                    interactive_elements = await modal_container.query_selector_all(INTERACTIVE_SELECTORS)
-                    
-                    for el in interactive_elements:
-                        if not await el.is_visible():
-                            continue
-
-                        if await self._is_destructive_action(el):
-                            continue
-
-                        combined_text = ''
-                        try:
-                            combined_text = (await el.text_content() or '').strip()
-                        except Exception:
-                            pass
-
-                        logger.debug("Clicking actionable element in modal: '%s'", combined_text[:30])
-                        try:
-                            await el.click(timeout=2000)
-                            await page.wait_for_timeout(1000)
-                            action_taken = True
-                        except Exception as click_err:
-                            logger.warning("Could not click modal element: %s", click_err)
-                except Exception as e:
-                    logger.error("Error exploring modal elements: %s", e)
-            else:
-                logger.info("Could not explicitly identify modal container. Falling back to targeted selectors.")
-                # Fallback to the old method
-                action_selectors = [
-                    'button:has-text("Confirm")',
-                    'button:has-text("Yes")',
-                    'button:has-text("Accept")',
-                    'button:has-text("Submit")',
-                    'button:has-text("Continue")',
-                    'button:has-text("Save")',
-                    'button:has-text("Create")',
-                    'button:has-text("Update")',
-                    'button:has-text("Delete")',
-                    'input[type="submit"]',
-                    '.btn-primary:not([disabled])',
-                ]
-                
-                for selector in action_selectors:
-                    try:
-                        elements = await page.query_selector_all(selector)
-                        for el in elements:
-                            if await el.is_visible():
-                                logger.debug("Clicking affirmative action as fallback: %s", selector)
-                                await el.click(timeout=2000)
-                                await page.wait_for_timeout(1000)
-                                action_taken = True
-                    except Exception:
-                        continue
-
-            if action_taken:
-                # Give it a moment to process the action and potentially close the modal
-                await page.wait_for_timeout(1000)
-            
-            # 3. Dismissal (fallback if affirmative actions didn't close it or weren't found)
-            dismiss_selectors = DISMISS_SELECTORS
-            
-            for selector in dismiss_selectors:
-                try:
-                    elements = await page.query_selector_all(selector)
-                    for el in elements:
-                        if await el.is_visible():
-                            logger.debug("Clicking dismiss action in overlay: %s", selector)
-                            await el.click(timeout=2000)
-                            await page.wait_for_timeout(500)
-                except Exception:
-                    continue
-                    
-            # Final fallback: escape key
-            await page.keyboard.press('Escape')
-            await page.wait_for_timeout(500)
-            
-        except Exception as e:
-            logger.error("Error while trying to handle overlay: %s", e)
+    # --- State management ---
 
     def reset_page_counters(self):
         """Reset counters for new page."""
         self.clicks_on_current_page = 0
-    
+
     def can_continue_navigation(self) -> bool:
         """Check if navigation can continue."""
         return self.current_depth < self.config.max_depth
 
+    # --- Delegation methods for backward compatibility ---
+
+    async def _is_destructive_action(self, element, text: str = "") -> bool:
+        return await self.classifier.is_destructive_action(element, text)
+
+    async def _is_date_picker_element(self, element) -> bool:
+        return await self.classifier.is_date_picker_element(element)
+
+    async def _is_calendar_overlay(self, container) -> bool:
+        return await self.classifier.is_calendar_overlay(container)
+
+    async def _get_dom_hash(self, page: Page) -> str:
+        return await self.dom_hasher.get_dom_hash(page)
+
+    async def _get_overlay_hash(self, container) -> str:
+        return await self.dom_hasher.get_overlay_hash(container)
+
+    async def _dismiss_calendar_overlay(self, page: Page) -> bool:
+        return await self.overlay_handler.dismiss_calendar_overlay(page)
+
+    async def _handle_overlay(self, page: Page):
+        return await self.overlay_handler.handle_overlay(page)
+
+    async def fill_page_forms(self, page: Page, root=None):
+        return await self.form_filler.fill_page_forms(page, root)
+
+    async def _generate_value_with_length(self, base_value: str, min_length: int) -> str:
+        return await self.form_filler._generate_value_with_length(base_value, min_length)
